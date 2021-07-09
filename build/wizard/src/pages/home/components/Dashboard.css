@@ -1,0 +1,3 @@
+.dashboard .panel-tabs a.is-active {
+    border-bottom-color: #aaa;
+}

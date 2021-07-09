@@ -1,0 +1,26 @@
+
+version: '3.4'
+services:
+  qtum.avado.dnp.dappnode.eth:
+    image: 'qtum.avado.dnp.dappnode.eth:0.0.1'
+    build:
+      context: ./build
+      args:
+        - VERSION=mainnet-fastlane-v0.20.3
+    environment:
+      - EXTRA_OPTS=--testnet
+    volumes:
+      - 'data:/root/.qtum'
+    ports:
+      - '3888:3888'
+      - '3889:3889'
+      - '13888:13888'
+      - '13889:13889'
+      - '80:80'
+      - '443:443'
+    logging:
+      options:
+        max-size: 10m
+        max-file: '3'
+volumes:
+  data: {}
