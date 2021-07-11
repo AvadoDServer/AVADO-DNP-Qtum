@@ -1,14 +1,14 @@
-
 version: '3.4'
 services:
   qtum.avado.dnp.dappnode.eth:
-    image: 'qtum.avado.dnp.dappnode.eth:0.0.1'
+    image: 'qtum.avado.dnp.dappnode.eth:0.0.5'
     build:
       context: ./build
       args:
         - VERSION=mainnet-fastlane-v0.20.3
     environment:
-      - EXTRA_OPTS=--testnet
+        # add -testnet to for testnet and do not forget to change rpc port to 13889 in wizard
+      - EXTRA_OPTS=-superstaking -stakingminfee=10 -stakingminutxovalue=100
     volumes:
       - 'data:/root/.qtum'
     ports:

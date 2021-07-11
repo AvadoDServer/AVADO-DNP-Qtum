@@ -5,10 +5,12 @@ import checkmark from "../../../assets/green-checkmark-line.svg";
 import { RequestManager, HTTPTransport, Client } from "@open-rpc/client-js";
 
 
-const Comp = ({ onNodeReady, onNodeIdAvailable }) => {
+const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
 
+    const [address, setAddress] = React.useState(undefined);
+    const [balance, setBalance] = React.useState(undefined);
+    const [isStaking, setIsStaking] = React.useState(undefined);
     const [nodePeers, setNodePeers] = React.useState();
-    const [stakingEnabled, setStakingEnabled] = React.useState(undefined);
     const [stakeWeight, setStakeWeight] = React.useState(undefined);
     const [expectedRewardTime, setExpectedRewardTime] = React.useState(undefined);
     const [isSynced, setIsSycned] = React.useState(undefined);
@@ -26,48 +28,56 @@ const Comp = ({ onNodeReady, onNodeIdAvailable }) => {
     }, []);
 
     React.useEffect(() => {
-        const rpc = new Client(new RequestManager([new HTTPTransport("http://localhost/rpc")]));
-        const fetchInfo = async () => {
-            const walletInfo = await rpc.request({ method: 'getwalletinfo' });
-            const blockchainInfo = await rpc.request({ method: 'getblockchaininfo' });
-            const stakingInfo = await rpc.request({ method: 'getstakinginfo' });
-            const peers = await rpc.request({ method: 'getconnectioncount' });
+        const createAddress = async () => {
+            return await rpcClient.request({ method: 'getnewaddress', params: ['', 'legacy'] });
+        }
 
+        const fetchAddress = async () => {
+            try {
+                const addresses = await rpcClient.request({ method: 'getaddressesbylabel', params: ['']});
+                setAddress(Object.keys(addresses)[0]);
+            } catch (err) {
+                console.log(err);
+                if(err.message.includes('No addresses with label')) {
+                    setAddress(await createAddress());
+                }
+            }
+        }
+
+        const fetchWalletInfo = async () => {
+            const walletInfo = await rpcClient.request({ method: 'getwalletinfo' });
             console.log(walletInfo);
+            setBalance(walletInfo.balance);
+        }
+
+        const fetchStakingInfo = async () => {
+            const stakingInfo = await rpcClient.request({ method: 'getstakinginfo' });
             console.log(stakingInfo);
-            setStakingEnabled(stakingInfo.staking);
+            setIsStaking(stakingInfo.staking);
             setExpectedRewardTime(stakingInfo.expectedtime);
             setStakeWeight(stakingInfo.weight);
-            setNodePeers(peers);
+        }
+
+        const fetchBlockchainInfo = async () => {
+            const blockchainInfo = await rpcClient.request({ method: 'getblockchaininfo' });
             setIsSycned(blockchainInfo.blocks == blockchainInfo.headers);
         }
-        fetchInfo();
 
-        // let myNetworkID = 1; //default is 3, we want to override that for our local network
-        // let myBlockchainID = "X"; // The X-Chain blockchainID on this network
-        // let ava = new Avalanche(endpoint.host, endpoint.port, endpoint.protocol, myNetworkID, myBlockchainID);
+        const fetchPeers = async () => {
+            const peers = await rpcClient.request({ method: 'getconnectioncount' });
+            setNodePeers(peers);
+        }
 
-        // let info = ava.Info();
-        // info.getNodeID().then((res) => {
-        //     setNodeID(res);
-        //     onNodeIdAvailable && onNodeIdAvailable(res);
-        // }).catch((e) => {
-        //     setNodeID(`Unknown:` + e.message);
-        // })
-        // info.isBootstrapped(myBlockchainID).then((res) => {
-        //     // debugger;
-        //     setIsBootstrapped(res);
-        // })
-        // info.peers().then((res) => {
-        //     // debugger;
-        //     setNodePeers(res.length);
-        // })
-
+        fetchAddress();
+        fetchWalletInfo();
+        fetchStakingInfo();
+        fetchBlockchainInfo();
+        fetchPeers();
     }, [clockTick]);
 
 
     React.useEffect(() => {
-        if (isSynced && nodePeers >= 10) {
+        if (isSynced && nodePeers >= 2) {
             setWalletReady(true);
             onNodeReady && onNodeReady(true);
         } else {
@@ -91,16 +101,24 @@ const Comp = ({ onNodeReady, onNodeIdAvailable }) => {
                         <th colSpan="2"></th>
                     </tr>
                         <tr>
-                            <td>staking enabled</td>
-                            <td>{stakingEnabled === undefined ? "..loading" : stakingEnabled === false ? "no" : "yes"}</td>
+                            <td>address</td>
+                            <td>{isStaking === undefined ? "..loading" : address}</td>
+                        </tr>
+                        <tr>
+                            <td>balance</td>
+                            <td>{balance === undefined ? "..loading" : !isSynced ? 'node not synced..' : balance}</td>
+                        </tr>
+                        <tr>
+                            <td>staking</td>
+                            <td>{isStaking === undefined ? "..loading" : !isSynced ? 'node not synced..' : isStaking === false ? "no" : "yes"}</td>
                         </tr>
                         <tr>
                             <td>stake weight</td>
-                            <td>{stakeWeight || "..loading"}</td>
+                            <td>{stakeWeight === undefined ? "..loading" : !isSynced ? 'node not synced..' : stakeWeight}</td>
                         </tr>
                         <tr>
                             <td>expected reward time</td>
-                            <td>{stakingEnabled === undefined ? "..loading" : expectedRewardTime === 0 ? "never" : expectedRewardTime}</td>
+                            <td>{expectedRewardTime === undefined ? "..loading" : !isSynced ? 'node not synced..' : expectedRewardTime === 0 ? "never" : expectedRewardTime}</td>
                         </tr>
                         <tr>
                             <td>connected peers</td>

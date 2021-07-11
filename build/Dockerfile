@@ -1,3 +1,13 @@
+FROM node:15.6.0 as wizard-builder
+
+RUN apt-get update && apt-get install -y openssl
+RUN mkdir /root/wizard
+WORKDIR /root/wizard
+COPY wizard .
+RUN yarn
+RUN yarn build
+
+
 FROM golang:1.13.4-buster as builder
 
 ARG VERSION
@@ -16,7 +26,7 @@ RUN set -ex \
 
 ENV QTUM_CONF_PATH=/root/qtum.conf
 
-COPY files/qtum-testnet.conf $QTUM_CONF_PATH
+COPY files/qtum.conf $QTUM_CONF_PATH
 
 # Download certs
 RUN mkdir /cert
@@ -31,12 +41,12 @@ RUN apt-get clean
 # Copy supervisor and nginx configs
 COPY files/supervisord.conf /etc/supervisord/
 COPY files/nginx.conf /etc/nginx/
+
 RUN mkdir -p /etc/nginx/certs/
 RUN mv /cert/server.* /etc/nginx/certs/
-RUN ls -l /etc/nginx/certs
-RUN cat /etc/nginx/nginx.conf
 RUN useradd nginx
 
-EXPOSE 3888 3889 13888 13889
+RUN mkdir -p /usr/local/wizard
+COPY --from=wizard-builder /root/wizard/build /usr/local/wizard
 
 ENTRYPOINT supervisord -n -c /etc/supervisord/supervisord.conf

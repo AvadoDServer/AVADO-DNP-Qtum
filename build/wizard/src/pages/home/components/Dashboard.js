@@ -3,6 +3,7 @@ import QtumInfo from "./QtumInfo";
 import autobahn from "autobahn-browser";
 import DownloadBackup from "./DownloadBackup";
 import RestoreBackup from "./RestoreBackup";
+import { RequestManager, HTTPTransport, Client } from "@open-rpc/client-js";
 import "./Dashboard.css";
 
 const url = "ws://my.wamp.dnp.dappnode.eth:8080/ws";
@@ -15,8 +16,9 @@ const Comp = () => {
     const [nodeId, setNodeId] = React.useState();
     const [tab, setTab] = React.useState("backup");
 
-    React.useEffect(() => {
+    const rpcClient = new Client(new RequestManager([new HTTPTransport("http://qtum.avadopackage.com/rpc")]));
 
+    React.useEffect(() => {
         const connection = new autobahn.Connection({
             url,
             realm
@@ -35,12 +37,7 @@ const Comp = () => {
             console.error("CONNECTION_CLOSE", { reason, details });
         };
 
-
-
-
-
         connection.open();
-
     }, []);
 
 
@@ -57,6 +54,7 @@ const Comp = () => {
             <br />
             <div className="setting">
                 <QtumInfo
+                    rpcClient={rpcClient}
                     onNodeIdAvailable={setNodeId}
                     onNodeReady={(isReady) => {
                         setWalletEnabled(isReady);
@@ -86,13 +84,13 @@ const Comp = () => {
 
                                     {tab === "backup" && (
                                         <section className="is-medium has-text-white">
-                                            <p className="">You can download your node identity keys. this is very important when you stake AVAX since the nodeID is part of your stake.</p>
-                                            <DownloadBackup fileprefix={nodeId} session={wampSession} />
+                                            <p className="">You can download your wallet backup. This is very important when you stake Qtum since wallet holds the private keys.</p>
+                                            <DownloadBackup rpcClient={rpcClient} session={wampSession} />
                                         </section>
                                     )}
                                     {tab === "restore" && (
                                         <section className="is-medium has-text-white">
-                                            <p className="">Here you can upload your node identity keys. If you want to restore your node ID from a previous installation.</p>
+                                            <p className="">Here you can upload your wallet backup. If you want to restore your wallet from a previous installation.</p>
                                             <RestoreBackup session={wampSession} />
                                         </section>
                                     )}

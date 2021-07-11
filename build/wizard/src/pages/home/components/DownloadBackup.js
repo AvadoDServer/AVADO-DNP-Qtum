@@ -1,8 +1,6 @@
 import React from "react";
 import { saveAs } from "file-saver";
 
-const packageName = "avalanchego.avado.dnp.dappnode.eth";
-
 function dataUriToBlob(dataURI) {
     if (!dataURI || typeof dataURI !== "string")
         throw Error("dataUri must be a string");
@@ -30,28 +28,10 @@ function dataUriToBlob(dataURI) {
     return blob;
 }
 
-
-const Comp = ({ session, fileprefix }) => {
-
-    const [fromPath, setFromPath] = React.useState("/root/.avalanchego/staking");
-
-    function parseFileName(path, mimeType) {
-        if (!path || typeof path !== "string") return path;
-        const subPaths = path.split("/");
-        let fileName = fileprefix || subPaths[subPaths.length - 1] || "";
-
-        // Add extension in case it is a compressed directory
-        if (
-            (mimeType === "application/gzip" && !fileName.endsWith(".gzip")) ||
-            !fileName.endsWith(".gz") ||
-            !fileName.endsWith(".tar.gz")
-        )
-            fileName = `${fileName}.tar.gz`;
-
-        return fileName;
-    }
-
+const Comp = ({ rpcClient, session }) => {
     async function downloadFile() {
+        const walletBackupPath = '/root/wallet.bat';
+
         try {
             /**
              * [copyFileFrom]
@@ -69,35 +49,42 @@ const Comp = ({ session, fileprefix }) => {
              * @returns {string} dataUri = "data:application/zip;base64,UEsDBBQAAAg..."
              */
 
-            const res = JSON.parse(await session.call("copyFileFrom.dappmanager.dnp.dappnode.eth", [],
+            await rpcClient.request({ method: 'backupwallet', params: [walletBackupPath] })
+
+            const copyFileFromResponse = JSON.parse(await session.call("copyFileFrom.dappmanager.dnp.dappnode.eth", [],
                 {
-                    id: packageName,
-                    fromPath: fromPath
+                    id: "qtum.avado.dnp.dappnode.eth",
+                    fromPath: walletBackupPath
                 }
             ));
 
-            if (res.success !== true) return;
-            const dataUri = res.result;
+            if (copyFileFromResponse.success !== true) {
+                return;
+            }
+
+            const dataUri = copyFileFromResponse.result;
             // const dataUri = await api.copyFileFrom(
             //     { id, fromPath },
             //     { toastMessage: `Copying file from ${shortName(id)} ${fromPath}...` }
             // );
 
 
-            if (!dataUri) return;
+            if (!dataUri) {
+                return;
+            }
 
             const blob = dataUriToBlob(dataUri);
-            const fileName = parseFileName(fromPath, blob.type);
+            const fileName = 'qtum-wallet.backup';
 
             saveAs(blob, fileName);
         } catch (e) {
-            console.error(`Error on copyFileFrom ${fromPath}: ${e.stack}`);
+            console.error(`Error on downloading backup ${walletBackupPath}: ${e.stack}`);
         }
     }
 
 
     return (
-        <button className="button" onClick={downloadFile}>Download Node Keys backup</button>
+        <button className="button" onClick={downloadFile}>Download Wallet backup</button>
     );
 
 }
