@@ -13,14 +13,14 @@
     "size": 268859268,
     "restart": "always",
     "environment": [
-      "EXTRA_OPTS=-superstaking -stakingminfee=10 -stakingminutxovalue=100"
+      "EXTRA_OPTS"
     ],
     "ports": [
       "3888:3888",
       "3889:3889"
     ],
     "volumes": [
-      "data:/root/.qtum"
+      "data:/package/data/qtum"
     ]
   },
   "author": "AVADO",
