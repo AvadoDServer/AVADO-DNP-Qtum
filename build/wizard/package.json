@@ -13,6 +13,7 @@
     "ethereum-private-key-to-address": "^0.0.3",
     "file-saver": "^2.0.5",
     "formik": "^1.5.8",
+    "humanize-duration": "^3.27.0",
     "jayson": "^3.6.4",
     "node-sass": "^4.12.0",
     "react": "^16.12.0",

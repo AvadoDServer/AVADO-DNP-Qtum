@@ -1,3 +1,4 @@
+# Build Wizard
 FROM node:15.6.0 as wizard-builder
 
 RUN apt-get update && apt-get install -y openssl
@@ -11,8 +12,14 @@ WORKDIR /package/monitor
 COPY monitor .
 RUN yarn install
 
+# Build Wallet
+FROM node:15.6.0 as web-wallet-builder
 
-FROM golang:1.13.4-buster as builder
+WORKDIR /package/wallet
+RUN git clone https://github.com/qtumproject/qtum-web-wallet .
+
+# Final image
+FROM golang:1.13.4-buster
 
 ARG VERSION
 
@@ -49,5 +56,6 @@ RUN useradd nginx
 RUN mkdir -p /package/wizard
 COPY --from=wizard-builder /package/wizard/build /package/wizard
 COPY --from=wizard-builder /package/monitor /package/monitor
+COPY --from=web-wallet-builder /package/wallet/dist /package/wallet
 
 ENTRYPOINT supervisord -n -c /etc/supervisord/supervisord.conf

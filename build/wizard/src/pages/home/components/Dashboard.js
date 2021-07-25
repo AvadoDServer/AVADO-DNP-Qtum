@@ -11,7 +11,6 @@ const realm = "dappnode_admin";
 
 
 const Comp = () => {
-    const [walletEnabled, setWalletEnabled] = React.useState(false);
     const [wampSession, setWampSession] = React.useState();
     const [nodeId, setNodeId] = React.useState();
     const [tab, setTab] = React.useState("backup");
@@ -56,13 +55,11 @@ const Comp = () => {
                 <QtumInfo
                     rpcClient={rpcClient}
                     onNodeIdAvailable={setNodeId}
-                    onNodeReady={(isReady) => {
-                        setWalletEnabled(isReady);
-                    }} />
+                    onNodeReady={(isReady) => {}} />
                 <a href="http://my.avado/#/Packages/qtum.avado.dnp.dappnode.eth/detail" target="_blank">show node logs</a>
                 <br />
                 <br />
-                <a disabled={!walletEnabled} href="https://qtum.avadopackage.com/" className="button" target="_blank">Open Wallet UI</a>
+                <a href="https://qtum.avadopackage.com/" className="button" target="_blank">Open Wallet UI</a>
             </div>
 
             <div className="setting">

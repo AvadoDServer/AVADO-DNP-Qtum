@@ -2,8 +2,7 @@ import React from "react";
 import "./QtumInfo.css";
 import spinner from "../../../assets/spinner.svg";
 import checkmark from "../../../assets/green-checkmark-line.svg";
-import { RequestManager, HTTPTransport, Client } from "@open-rpc/client-js";
-
+import humanizeDuration from "humanize-duration";
 
 const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
 
@@ -34,11 +33,11 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
 
         const fetchAddress = async () => {
             try {
-                const addresses = await rpcClient.request({ method: 'getaddressesbylabel', params: ['']});
+                const addresses = await rpcClient.request({ method: 'getaddressesbylabel', params: [''] });
                 setAddress(Object.keys(addresses)[0]);
             } catch (err) {
                 console.log(err);
-                if(err.message.includes('No addresses with label')) {
+                if (err.message.includes('No addresses with label')) {
                     setAddress(await createAddress());
                 }
             }
@@ -54,7 +53,7 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
             const stakingInfo = await rpcClient.request({ method: 'getstakinginfo' });
             console.log(stakingInfo);
             setIsStaking(stakingInfo.staking);
-            setExpectedRewardTime(stakingInfo.expectedtime);
+            setExpectedRewardTime(stakingInfo.expectedtime * 1000); // seconds -> milliseconds
             setStakeWeight(stakingInfo.weight);
         }
 
@@ -118,7 +117,7 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
                         </tr>
                         <tr>
                             <td>expected reward time</td>
-                            <td>{expectedRewardTime === undefined ? "..loading" : !isSynced ? 'node not synced..' : expectedRewardTime === 0 ? "never" : expectedRewardTime}</td>
+                            <td>{expectedRewardTime === undefined ? "..loading" : !isSynced ? 'node not synced..' : expectedRewardTime === 0 ? "never" : humanizeDuration(expectedRewardTime, { round: true, units: ['d', 'h', 'm'] })}</td>
                         </tr>
                         <tr>
                             <td>connected peers</td>
