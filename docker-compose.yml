@@ -7,7 +7,6 @@ services:
       args:
         - VERSION=mainnet-fastlane-v0.20.3
     environment:
-        # add -testnet to for testnet and do not forget to change rpc port to 13889 in wizard
       - EXTRA_OPTS=-testnet
     volumes:
       - 'data:/package/data/qtum'
