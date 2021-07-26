@@ -1,0 +1,40 @@
+{
+  "name": "qtum.avado.dnp.dappnode.eth",
+  "version": "0.0.5",
+  "upstream": "mainnet-fastlane-v0.20.3",
+  "title": "Qtum node",
+  "description": "This is the Qtum Mainnet node. Qtum is an open sourced public blockchain platform, leveraging the security of UTXO while enabling multiple virtual machines including EVM and ARM VM. Qtum is PoS based and boasts a Decentralized Governance Protocol (DGP) allowing specific blockchain settings to be modified by making use of smart contracts.",
+  "avatar": "/ipfs/QmUJyDJqT5MMiDkLCuaiKGpQtjpGkTdLaN4ooboFQoouEB",
+  "type": "service",
+  "autoupdate": true,
+  "image": {
+    "path": "qtum.avado.dnp.dappnode.eth_0.0.5.tar.xz",
+    "hash": "/ipfs/QmQKJzuWtNcieCmZDicAa24AZTXeakVrvxZ5Ph7eFu7ubP",
+    "size": 268859268,
+    "restart": "always",
+    "environment": [
+      "EXTRA_OPTS"
+    ],
+    "ports": [
+      "3888:3888",
+      "3889:3889"
+    ],
+    "volumes": [
+      "data:/package/data/qtum"
+    ]
+  },
+  "author": "AVADO",
+  "license": "(C)",
+  "links": {
+    "OnboardingWizard": "http://qtum.avadopackage.com",
+    "Wallet": "https://qtum.avadopackage.com",
+    "RPC": "https://qtum.avadopackage.com:3889"
+  },
+  "ui": {
+    "OnboardingWizard": {
+      "url": "http://qtum.avadopackage.com",
+      "external": true
+    }
+  },
+  "builddate": "2021-07-11T15:14:40.663Z"
+}

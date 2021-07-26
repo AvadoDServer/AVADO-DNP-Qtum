@@ -1,0 +1,15 @@
+
+.table-profile td,
+th {
+  border: none !important;
+}
+
+.table-profile td:first-of-type {
+  font-weight: bold;
+  padding-right: 1em;
+}
+
+.icon {
+    padding:4px;
+}
+
