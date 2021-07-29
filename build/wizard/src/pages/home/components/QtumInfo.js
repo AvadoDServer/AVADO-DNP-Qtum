@@ -1,12 +1,14 @@
 import React from "react";
 import "./QtumInfo.css";
+import DisplayPrivateKeyModal from "./DisplayPrivateKeyModal";
+import ConfigInput from "./ConfigInput";
 import spinner from "../../../assets/spinner.svg";
 import checkmark from "../../../assets/green-checkmark-line.svg";
 import humanizeDuration from "humanize-duration";
 
 const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
 
-    const [address, setAddress] = React.useState(undefined);
+    const [addresses, setAddresses] = React.useState(undefined);
     const [balance, setBalance] = React.useState(undefined);
     const [isStaking, setIsStaking] = React.useState(undefined);
     const [nodePeers, setNodePeers] = React.useState();
@@ -14,7 +16,9 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
     const [expectedRewardTime, setExpectedRewardTime] = React.useState(undefined);
     const [isSynced, setIsSycned] = React.useState(undefined);
     const [clockTick, setClockTick] = React.useState(0);
-    const [walletReady, setWalletReady] = React.useState(false);
+    const [isPrivateKeyModalVisible, setIsPrivateKeyModalVisible] = React.useState(false);
+    const [privateKeyAddress, setPrivateKeyAddress] = React.useState(undefined);
+    const [privateKey, setPrivateKey] = React.useState(undefined);
 
     React.useEffect(() => {
         const timer = setInterval(() => {
@@ -31,16 +35,32 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
             return await rpcClient.request({ method: 'getnewaddress', params: ['', 'legacy'] });
         }
 
-        const fetchAddress = async () => {
+        const fetchAddresses = async () => {
+            let labels;
             try {
-                const addresses = await rpcClient.request({ method: 'getaddressesbylabel', params: [''] });
-                setAddress(Object.keys(addresses)[0]);
+                labels = await rpcClient.request({ method: 'listlabels', params: [''] });
             } catch (err) {
-                console.log(err);
-                if (err.message.includes('No addresses with label')) {
-                    setAddress(await createAddress());
-                }
+                console.log(`Error while getting labels. Err: ${err.message}`);
+                return;
             }
+
+            let addresses = [];
+
+            try {
+                for (const label of labels) {
+                    const result = await rpcClient.request({ method: 'getaddressesbylabel', params: [label] });
+                    addresses.push(...Object.keys(result));
+                }
+            } catch (err) {
+                console.log(`Error while getting addresses by label. Err: ${err.message}`);
+                return;
+            }
+
+            if (addresses.length == 0) {
+                addresses.push(await createAddress());
+            }
+
+            setAddresses(addresses);
         }
 
         const fetchWalletInfo = async () => {
@@ -67,7 +87,7 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
             setNodePeers(peers);
         }
 
-        fetchAddress();
+        fetchAddresses();
         fetchWalletInfo();
         fetchStakingInfo();
         fetchBlockchainInfo();
@@ -77,12 +97,17 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
 
     React.useEffect(() => {
         if (isSynced && nodePeers >= 2) {
-            setWalletReady(true);
             onNodeReady && onNodeReady(true);
-        } else {
-            setWalletReady(false);
         }
     }, [isSynced, nodePeers])
+
+    const fetchPrivateKey = async (address) => {
+        const privateKey = await rpcClient.request({ method: 'dumpprivkey', params: [address] });
+
+        setPrivateKeyAddress(address);
+        setPrivateKey(privateKey);
+        setIsPrivateKeyModalVisible(true);
+    }
 
     // if (!node) {
     //     return (<div>Loading...</div>);
@@ -100,37 +125,51 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
                         <th colSpan="2"></th>
                     </tr>
                         <tr>
-                            <td>address</td>
-                            <td>{isStaking === undefined ? "..loading" : address}</td>
-                        </tr>
-                        <tr>
                             <td>balance</td>
-                            <td>{balance === undefined ? "..loading" : !isSynced ? 'node not synced..' : balance}</td>
+                            <td>{balance === undefined ? "loading.." : !isSynced ? 'node not synced..' : balance}</td>
                         </tr>
                         <tr>
                             <td>staking</td>
-                            <td>{isStaking === undefined ? "..loading" : !isSynced ? 'node not synced..' : isStaking === false ? "no" : "yes"}</td>
+                            <td>{isStaking === undefined ? "loading.." : !isSynced ? 'node not synced..' : isStaking === false ? "no" : "yes"}</td>
                         </tr>
                         <tr>
                             <td>stake weight</td>
-                            <td>{stakeWeight === undefined ? "..loading" : !isSynced ? 'node not synced..' : stakeWeight}</td>
+                            <td>{stakeWeight === undefined ? "loading.." : !isSynced ? 'node not synced..' : stakeWeight}</td>
                         </tr>
                         <tr>
                             <td>expected reward time</td>
-                            <td>{expectedRewardTime === undefined ? "..loading" : !isSynced ? 'node not synced..' : expectedRewardTime === 0 ? "never" : humanizeDuration(expectedRewardTime, { round: true, units: ['d', 'h', 'm'] })}</td>
+                            <td>{expectedRewardTime === undefined ? "loading.." : !isSynced ? 'node not synced..' : expectedRewardTime === 0 ? "never" : humanizeDuration(expectedRewardTime, { round: true, units: ['d', 'h', 'm'] })}</td>
                         </tr>
                         <tr>
                             <td>connected peers</td>
-                            <td>{nodePeers || "..loading"}</td>
+                            <td>{nodePeers || "loading.."}</td>
                         </tr>
                         <tr>
                             <td>is synced</td>
-                            <td>{isSynced === undefined ? "..loading" : isSynced === false ? "no" : "yes"}</td>
+                            <td>{isSynced === undefined ? "loading.." : isSynced === false ? "no" : "yes"}</td>
                         </tr>
                     </tbody></table>
 
-                {!walletReady ? (
-                    <div className="level">
+                <div style={{ marginTop: 15 }}>
+                    <p className="has-text-white has-text-weight-bold">Addresses in wallet: </p>
+                    <ul id="addresses">
+                        {addresses === undefined ? 'loading..' : addresses.map(address => {
+                            return <>
+                                <li key={address}>
+                                    <span>{address}</span>
+                                    <button style={{ marginLeft: 5 }} onClick={(_) => fetchPrivateKey(address)}>Show WIF</button>
+                                </li>
+                            </>
+                        })}
+                    </ul>
+                </div>
+
+                
+                <ConfigInput name="Minimum Delegation Fee(%)" envName="DELEGATION_FEE_PERCENT"/>
+                <ConfigInput name="Minimum Delegation Amount" envName="MIN_DELEGATION_AMOUNT"/>
+
+                {!isSynced ? (
+                    <div style={{ marginTop: 10 }} className="level">
                         <div className="level-left">
                             <span class="icon is-medium ">
                                 <img alt="spinner" src={spinner} />
@@ -147,6 +186,9 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
                     </div>
                 )
                 }
+
+                {isPrivateKeyModalVisible && <DisplayPrivateKeyModal address={privateKeyAddress} privateKey={privateKey} onClose={() => { setIsPrivateKeyModalVisible(false) }} />}
+
             </section>
         </>);
 

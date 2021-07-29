@@ -20,7 +20,7 @@
       "3889:3889"
     ],
     "volumes": [
-      "data:/package/data/qtum"
+      "data:/package/data"
     ]
   },
   "author": "AVADO",

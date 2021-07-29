@@ -1,9 +1,9 @@
-var exec = require('child_process').exec;
 const restify = require("restify");
 const corsMiddleware = require("restify-cors-middleware");
 const fs = require("fs");
 const supervisord = require('supervisord');
 const supervisordclient = supervisord.connect('http://localhost:9001');
+const ini = require('ini');
 
 const JSONdb = require('simple-json-db');
 const dbFile = '/package/data/config.json';
@@ -51,8 +51,7 @@ server.post("/setenv", async (req, res) => {
         await db.set(key, req.body[key]);
     })
 
-    await stopService();
-    await startService();
+    restartService();
 
     res.send(200, db.JSON());
 });
@@ -64,21 +63,34 @@ server.get('/*', restify.plugins.serveStaticFiles(`${__dirname}/wizard`, {
 
 const serviceName = "qtum"
 
-const startService = () => {
-    return supervisordclient.startProcess(serviceName, (err, result) => {
-        if (err) {
-            console.log(`error starting service ${serviceName}`, err);
-        }
-        console.log(`successfully started service ${serviceName}`);
-    });
+const syncQtumConf = () => {
+    const qtumConfigPath = '/package/data/qtum.conf';
+    const config = ini.parse(fs.readFileSync(qtumConfigPath, 'utf-8'));
+    const envVariablesToQtumConfigVariables = {
+        "DELEGATION_FEE_PERCENT": "stakingminfee",
+        "MIN_DELEGATION_AMOUNT": "stakingminutxovalue",
+    };
+
+    for (const [envVarName, qtumConfigVarName] of Object.entries(envVariablesToQtumConfigVariables)) {
+        config[qtumConfigVarName] = db.get(envVarName);
+    }
+
+    fs.writeFileSync(qtumConfigPath, ini.stringify(config));
 }
 
-const stopService = () => {
-    return supervisordclient.stopProcess(serviceName, (err, result) => {
+const restartService = () => {
+    syncQtumConf();
+    supervisordclient.stopProcess(serviceName, (err, result) => {
         if (err) {
             console.log(`error stopping service ${serviceName}`, err);
         }
-        console.log(`successfully stopped service ${serviceName}`);
+
+        supervisordclient.startProcess(serviceName, (err, result) => {
+            if (err) {
+                console.log(`error starting service ${serviceName}`, err);
+            }
+            console.log(`successfully started service ${serviceName}`);
+        });
     });
 }
 
@@ -121,7 +133,7 @@ const main = async () => {
         } else {
             console.log(`A config file exists - attemtping to start service`);
             console.log(censor(db.JSON()));
-            startService();
+            restartService();
         }
     }
 

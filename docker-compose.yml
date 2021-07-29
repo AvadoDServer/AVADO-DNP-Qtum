@@ -9,7 +9,7 @@ services:
     environment:
       - EXTRA_OPTS=-testnet
     volumes:
-      - 'data:/package/data/qtum'
+      - 'data:/package/data'
     ports:
       - '3888:3888'
       - '3889:3889'

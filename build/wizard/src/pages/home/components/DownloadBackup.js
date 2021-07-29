@@ -30,7 +30,7 @@ function dataUriToBlob(dataURI) {
 
 const Comp = ({ rpcClient, session }) => {
     async function downloadFile() {
-        const walletBackupPath = '/root/wallet.bat';
+        const walletBackupPath = '/tmp/wallet.backup';
 
         try {
             /**

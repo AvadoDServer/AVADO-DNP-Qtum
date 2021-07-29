@@ -76,6 +76,7 @@ const Comp = () => {
                                 <p class="panel-tabs">
                                     <a className={`${tab === "backup" ? "is-active  has-text-weight-bold" : ""} has-text-white`} onClick={() => { setTab("backup") }} >Backup</a>
                                     <a className={`${tab === "restore" ? "is-active has-text-weight-bold" : ""} has-text-white`} onClick={() => { setTab("restore") }} >Restore</a>
+                                    <a className={`${tab === "import-privkey" ? "is-active has-text-weight-bold" : ""} has-text-white`} onClick={() => { setTab("import-privkey") }} >Import Private Key</a>
                                 </p>
                                 <div class="panel-block">
 
@@ -88,6 +89,12 @@ const Comp = () => {
                                     {tab === "restore" && (
                                         <section className="is-medium has-text-white">
                                             <p className="">Here you can upload your wallet backup. If you want to restore your wallet from a previous installation.</p>
+                                            <RestoreBackup session={wampSession} />
+                                        </section>
+                                    )}
+                                    {tab === "import-privkey" && (
+                                        <section className="is-medium has-text-white">
+                                            <p className="">Here you can import a private key. Do not forget to backup your wallet after importing.</p>
                                             <RestoreBackup session={wampSession} />
                                         </section>
                                     )}

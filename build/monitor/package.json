@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "ini": "^2.0.0",
     "restify": "^8.5.1",
     "restify-cors-middleware": "^1.1.1",
     "simple-json-db": "^1.2.3",
