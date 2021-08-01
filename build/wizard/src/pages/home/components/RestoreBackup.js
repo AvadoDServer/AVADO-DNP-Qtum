@@ -1,22 +1,11 @@
 import React from "react";
+import monitor from "../../../util/monitor";
 
 const packageName = "qtum.avado.dnp.dappnode.eth";
 
-const Comp = ({ rpcClient, session }) => {
+const Comp = ({ session }) => {
 
     const [uploadResult, setUploadResult] = React.useState();
-    const [restartResult, setRestartResult] = React.useState();
-
-    const restart = async () => {
-        const res = JSON.parse(await session.call("restartPackage.dappmanager.dnp.dappnode.eth", [],
-            {
-                id: packageName,
-            }));
-        if (res.success === true) {
-            setRestartResult("restarting package - wait a few minutes and reload this page");
-        }
-    }
-
 
     function fileToDataUri(file) {
         return new Promise((resolve, reject) => {
@@ -47,13 +36,15 @@ const Comp = ({ rpcClient, session }) => {
     }
 
     async function restoreWallet(file) {
-        const path = "/root";
-        const filename = "wallet.backup";
+        const path = "/package/data/qtum";
+        const filename = `wallet.dat`;
         try {
             await uploadFile(file, path, filename);
-            await rpcClient.require({ method: 'loadwallet', params: [`${path}/${filename}`] });
+            await monitor.restartQtum();
+            setUploadResult("Wallet restored successfully. Changes will be effective shortly..");
         } catch (err) {
-            console.error(`Error on uploading wallet backup ${packageName} ${path}/${filename}: ${err.stack}`);
+            setUploadResult("Wallet could not be restored.");
+            console.error(`Error on restoring wallet backup ${filename}: ${err.message}`);
         }
     }
 
@@ -62,17 +53,10 @@ const Comp = ({ rpcClient, session }) => {
             <div>
                 <input
                     type="file"
-                    onChange={e => uploadFile(e.target.files[0], "/root", "wallet.backup", setUploadResult)}
+                    onChange={e => restoreWallet(e.target.files[0])}
                 />
                 {uploadResult && (<div className="is-size-7">{uploadResult}</div>)}
             </div>
-
-            {uploadResult && (
-                <>
-                    <button className="button" onClick={restart}>restart node</button>
-                    {restartResult && (<div className="is-size-7">{restartResult}</div>)}
-                </>
-            )}
         </>
     );
 }

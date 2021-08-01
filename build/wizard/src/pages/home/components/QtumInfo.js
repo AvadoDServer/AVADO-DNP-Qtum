@@ -6,13 +6,12 @@ import spinner from "../../../assets/spinner.svg";
 import checkmark from "../../../assets/green-checkmark-line.svg";
 import humanizeDuration from "humanize-duration";
 
-const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
+const Comp = ({ rpcClient }) => {
 
     const [addresses, setAddresses] = React.useState(undefined);
     const [balance, setBalance] = React.useState(undefined);
     const [isStaking, setIsStaking] = React.useState(undefined);
     const [nodePeers, setNodePeers] = React.useState();
-    const [stakeWeight, setStakeWeight] = React.useState(undefined);
     const [expectedRewardTime, setExpectedRewardTime] = React.useState(undefined);
     const [isSynced, setIsSycned] = React.useState(undefined);
     const [clockTick, setClockTick] = React.useState(0);
@@ -65,16 +64,13 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
 
         const fetchWalletInfo = async () => {
             const walletInfo = await rpcClient.request({ method: 'getwalletinfo' });
-            console.log(walletInfo);
             setBalance(walletInfo.balance);
         }
 
         const fetchStakingInfo = async () => {
             const stakingInfo = await rpcClient.request({ method: 'getstakinginfo' });
-            console.log(stakingInfo);
             setIsStaking(stakingInfo.staking);
             setExpectedRewardTime(stakingInfo.expectedtime * 1000); // seconds -> milliseconds
-            setStakeWeight(stakingInfo.weight);
         }
 
         const fetchBlockchainInfo = async () => {
@@ -93,13 +89,6 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
         fetchBlockchainInfo();
         fetchPeers();
     }, [clockTick]);
-
-
-    React.useEffect(() => {
-        if (isSynced && nodePeers >= 2) {
-            onNodeReady && onNodeReady(true);
-        }
-    }, [isSynced, nodePeers])
 
     const fetchPrivateKey = async (address) => {
         const privateKey = await rpcClient.request({ method: 'dumpprivkey', params: [address] });
@@ -133,10 +122,6 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
                             <td>{isStaking === undefined ? "loading.." : !isSynced ? 'node not synced..' : isStaking === false ? "no" : "yes"}</td>
                         </tr>
                         <tr>
-                            <td>stake weight</td>
-                            <td>{stakeWeight === undefined ? "loading.." : !isSynced ? 'node not synced..' : stakeWeight}</td>
-                        </tr>
-                        <tr>
                             <td>expected reward time</td>
                             <td>{expectedRewardTime === undefined ? "loading.." : !isSynced ? 'node not synced..' : expectedRewardTime === 0 ? "never" : humanizeDuration(expectedRewardTime, { round: true, units: ['d', 'h', 'm'] })}</td>
                         </tr>
@@ -150,23 +135,9 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
                         </tr>
                     </tbody></table>
 
-                <div style={{ marginTop: 15 }}>
-                    <p className="has-text-white has-text-weight-bold">Addresses in wallet: </p>
-                    <ul id="addresses">
-                        {addresses === undefined ? 'loading..' : addresses.map(address => {
-                            return <>
-                                <li key={address}>
-                                    <span>{address}</span>
-                                    <button style={{ marginLeft: 5 }} onClick={(_) => fetchPrivateKey(address)}>Show WIF</button>
-                                </li>
-                            </>
-                        })}
-                    </ul>
-                </div>
 
-                
-                <ConfigInput name="Minimum Delegation Fee(%)" envName="DELEGATION_FEE_PERCENT"/>
-                <ConfigInput name="Minimum Delegation Amount" envName="MIN_DELEGATION_AMOUNT"/>
+                <ConfigInput name="Minimum Delegation Fee(%)" envName="DELEGATION_FEE_PERCENT" />
+                <ConfigInput name="Minimum Delegation Amount" envName="MIN_DELEGATION_AMOUNT" />
 
                 {!isSynced ? (
                     <div style={{ marginTop: 10 }} className="level">
@@ -186,6 +157,20 @@ const Comp = ({ rpcClient, onNodeReady, onNodeIdAvailable }) => {
                     </div>
                 )
                 }
+
+                <div style={{ marginTop: 15 }}>
+                    <p className="has-text-white has-text-weight-bold">Addresses in wallet: </p>
+                    <ul id="addresses">
+                        {addresses === undefined ? 'loading..' : addresses.map(address => {
+                            return <>
+                                <li key={address}>
+                                    <span>{address}</span>
+                                    <button style={{ marginLeft: 5 }} onClick={(_) => fetchPrivateKey(address)}>Show WIF</button>
+                                </li>
+                            </>
+                        })}
+                    </ul>
+                </div>
 
                 {isPrivateKeyModalVisible && <DisplayPrivateKeyModal address={privateKeyAddress} privateKey={privateKey} onClose={() => { setIsPrivateKeyModalVisible(false) }} />}
 

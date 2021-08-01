@@ -16,7 +16,7 @@ const defaults =
 {
     "DELEGATION_FEE_PERCENT": 10,
     "MIN_DELEGATION_AMOUNT": 100,
-    "WALLET_BACKUPPED": false,
+    "BACKUP_REQUIRED": true,
 };
 
 const server = restify.createServer({
@@ -51,17 +51,20 @@ server.post("/setenv", async (req, res) => {
         await db.set(key, req.body[key]);
     })
 
-    restartService();
+    restartQtum();
 
     res.send(200, db.JSON());
+});
+
+server.post("/restartQtum", async (req, res) => {
+    restartQtum();
+    res.send(200);
 });
 
 server.get('/*', restify.plugins.serveStaticFiles(`${__dirname}/wizard`, {
     maxAge: 1, // this is in millisecs
     etag: false,
 }));
-
-const serviceName = "qtum"
 
 const syncQtumConf = () => {
     const qtumConfigPath = '/package/data/qtum.conf';
@@ -78,18 +81,19 @@ const syncQtumConf = () => {
     fs.writeFileSync(qtumConfigPath, ini.stringify(config));
 }
 
-const restartService = () => {
+const restartQtum = () => {
     syncQtumConf();
-    supervisordclient.stopProcess(serviceName, (err, result) => {
+    const service = "qtum";
+    supervisordclient.stopProcess(service, (err, result) => {
         if (err) {
-            console.log(`error stopping service ${serviceName}`, err);
+            console.log(`error stopping service ${service}`, err);
         }
 
-        supervisordclient.startProcess(serviceName, (err, result) => {
+        supervisordclient.startProcess(service, (err, result) => {
             if (err) {
-                console.log(`error starting service ${serviceName}`, err);
+                console.log(`error starting service ${service}`, err);
             }
-            console.log(`successfully started service ${serviceName}`);
+            console.log(`successfully started service ${service}`);
         });
     });
 }
@@ -108,7 +112,7 @@ const main = async () => {
     // set default values
     Object.keys(defaults).map((key) => {
         const val = defaults[key];
-        if (!db.get(key)) {
+        if (db.get(key) === undefined) {
             db.set(key, val);
         }
     });
@@ -116,7 +120,7 @@ const main = async () => {
     // on startup - check if config file exists & start service if so
     if (fs.existsSync(dbFile)) {
         const missingKeys = Object.keys(defaults).reduce((accum, key) => {
-            if (!db.get(key) === undefined || db.get(key) === "") {
+            if (db.get(key) === undefined || db.get(key) === "") {
                 let r = {};
                 r[key] = db.get(key);
                 accum.push(r);
@@ -133,7 +137,7 @@ const main = async () => {
         } else {
             console.log(`A config file exists - attemtping to start service`);
             console.log(censor(db.JSON()));
-            restartService();
+            restartQtum();
         }
     }
 

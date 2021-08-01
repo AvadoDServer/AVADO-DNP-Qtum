@@ -1,5 +1,6 @@
 import React from "react";
 import { saveAs } from "file-saver";
+import axios from "axios";
 
 function dataUriToBlob(dataURI) {
     if (!dataURI || typeof dataURI !== "string")
@@ -28,29 +29,28 @@ function dataUriToBlob(dataURI) {
     return blob;
 }
 
-const Comp = ({ rpcClient, session }) => {
+const Comp = ({ rpcClient, session, onSuccess }) => {
     async function downloadFile() {
         const walletBackupPath = '/tmp/wallet.backup';
 
         try {
-            /**
-             * [copyFileFrom]
-             * Copy file from a DNP and download it on the client
-             *
-             * @param {string} id DNP .eth name
-             * @param {string} fromPath path to copy file from
-             * - If path = path to a file: "/usr/src/app/config.json".
-             *   Downloads and sends that file
-             * - If path = path to a directory: "/usr/src/app".
-             *   Downloads all directory contents, tar them and send as a .tar.gz
-             * - If path = relative path: "config.json".
-             *   Path becomes $WORKDIR/config.json, then downloads and sends that file
-             *   Same for relative paths to directories.
-             * @returns {string} dataUri = "data:application/zip;base64,UEsDBBQAAAg..."
-             */
-
             await rpcClient.request({ method: 'backupwallet', params: [walletBackupPath] })
 
+            /**
+            * [copyFileFrom]
+            * Copy file from a DNP and download it on the client
+            *
+            * @param {string} id DNP .eth name
+            * @param {string} fromPath path to copy file from
+            * - If path = path to a file: "/usr/src/app/config.json".
+            *   Downloads and sends that file
+            * - If path = path to a directory: "/usr/src/app".
+            *   Downloads all directory contents, tar them and send as a .tar.gz
+            * - If path = relative path: "config.json".
+            *   Path becomes $WORKDIR/config.json, then downloads and sends that file
+            *   Same for relative paths to directories.
+            * @returns {string} dataUri = "data:application/zip;base64,UEsDBBQAAAg..."
+            */
             const copyFileFromResponse = JSON.parse(await session.call("copyFileFrom.dappmanager.dnp.dappnode.eth", [],
                 {
                     id: "qtum.avado.dnp.dappnode.eth",
@@ -74,9 +74,12 @@ const Comp = ({ rpcClient, session }) => {
             }
 
             const blob = dataUriToBlob(dataUri);
-            const fileName = 'qtum-wallet.backup';
+            const fileName = 'qtum-wallet.dat';
 
             saveAs(blob, fileName);
+            if (onSuccess) {
+                await onSuccess();
+            }
         } catch (e) {
             console.error(`Error on downloading backup ${walletBackupPath}: ${e.stack}`);
         }

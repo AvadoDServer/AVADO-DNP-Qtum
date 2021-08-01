@@ -1,13 +1,13 @@
 version: '3.4'
 services:
   qtum.avado.dnp.dappnode.eth:
-    image: 'qtum.avado.dnp.dappnode.eth:0.0.5'
+    image: 'qtum.avado.dnp.dappnode.eth:0.0.1'
     build:
       context: ./build
       args:
         - VERSION=mainnet-fastlane-v0.20.3
     environment:
-      - EXTRA_OPTS=-testnet
+      - EXTRA_OPTS=
     volumes:
       - 'data:/package/data'
     ports:
