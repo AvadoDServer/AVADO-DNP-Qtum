@@ -55,9 +55,16 @@ const Comp = () => {
         const checkIfBackupRequired = async () => {
             const response = await monitor.getEnv();
             const backupRequired = response.data.BACKUP_REQUIRED;
-            // we need to create an address when BACKUP_REQUIRED true as it means package is recently installed
+            // we need to create an address when BACKUP_REQUIRED true
             if (backupRequired) {
-                await rpcClient.request({ method: 'getnewaddress', params: ['', 'legacy'] });
+                // if it fails, there is no address so we need to create one.
+                try {
+                    await rpcClient.request({ method: 'getaddressesbylabel', params: [''] });
+                } catch (err) {
+                    if (err.message.includes("No addresses with label")) {
+                        await rpcClient.request({ method: 'getnewaddress', params: ['', 'legacy'] });
+                    }
+                }
             }
             setBackupRequired(response.data.BACKUP_REQUIRED);
         }
