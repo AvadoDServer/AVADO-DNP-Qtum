@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "upstream": "mainnet-fastlane-v0.20.3",
   "title": "Qtum node",
-  "description": "This is the Qtum Mainnet node. Qtum is an open sourced public blockchain platform, leveraging the security of UTXO while enabling multiple virtual machines including EVM and ARM VM. Qtum is PoS based and boasts a Decentralized Governance Protocol (DGP) allowing specific blockchain settings to be modified by making use of smart contracts.",
+  "description": "This is the Qtum Mainnet node. Qtum is an open sourced public blockchain platform, leveraging the security of UTXO while enabling EVM. Qtum is PoS based and boasts a Decentralized Governance Protocol (DGP) allowing specific blockchain settings to be modified by making use of smart contracts.",
   "avatar": "/ipfs/QmUJyDJqT5MMiDkLCuaiKGpQtjpGkTdLaN4ooboFQoouEB",
   "type": "service",
   "autoupdate": true,
