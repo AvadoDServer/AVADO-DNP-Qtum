@@ -9,8 +9,8 @@
   "autoupdate": true,
   "image": {
     "path": "qtum.avado.dnp.dappnode.eth_0.0.1.tar.xz",
-    "hash": "/ipfs/QmZJKieRNL68GF7BaiajD1qEhDFW3shxzQuinKR5oPLkQ6",
-    "size": 297707976,
+    "hash": "/ipfs/QmXAeobAH4hNHoyk2s5KDNDxMUDBCUZJ3hPEBb5qWEJWoF",
+    "size": 299414696,
     "restart": "always",
     "environment": [
       "EXTRA_OPTS"
@@ -36,5 +36,5 @@
       "external": true
     }
   },
-  "builddate": "2021-08-17T14:34:30.426Z"
+  "builddate": "2021-08-26T21:48:12.148Z"
 }
