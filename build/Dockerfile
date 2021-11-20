@@ -35,6 +35,7 @@ RUN set -ex \
 	&& tar -xzvf $QTUM_DIST -C /usr/local --strip-components=1 \
 	&& rm /tmp/qtum*
 
+RUN mkdir -p /package/data/qtum
 ENV QTUM_CONF_PATH=/package/data/qtum.conf
 ENV QTUM_DATA_PATH=/package/data/qtum
 

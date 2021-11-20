@@ -1,9 +1,9 @@
-var exec = require('child_process').exec;
 const restify = require("restify");
 const corsMiddleware = require("restify-cors-middleware");
 const fs = require("fs");
 const supervisord = require('supervisord');
 const supervisordclient = supervisord.connect('http://localhost:9001');
+const ini = require('ini');
 
 const JSONdb = require('simple-json-db');
 const dbFile = '/package/data/config.json';
@@ -16,7 +16,7 @@ const defaults =
 {
     "DELEGATION_FEE_PERCENT": 10,
     "MIN_DELEGATION_AMOUNT": 100,
-    "WALLET_BACKUPPED": false,
+    "BACKUP_REQUIRED": true,
 };
 
 const server = restify.createServer({
@@ -51,10 +51,14 @@ server.post("/setenv", async (req, res) => {
         await db.set(key, req.body[key]);
     })
 
-    await stopService();
-    await startService();
+    restartQtum();
 
     res.send(200, db.JSON());
+});
+
+server.post("/restartQtum", async (req, res) => {
+    restartQtum();
+    res.send(200);
 });
 
 server.get('/*', restify.plugins.serveStaticFiles(`${__dirname}/wizard`, {
@@ -62,23 +66,35 @@ server.get('/*', restify.plugins.serveStaticFiles(`${__dirname}/wizard`, {
     etag: false,
 }));
 
-const serviceName = "qtum"
+const syncQtumConf = () => {
+    const qtumConfigPath = '/package/data/qtum.conf';
+    const config = ini.parse(fs.readFileSync(qtumConfigPath, 'utf-8'));
+    const envVariablesToQtumConfigVariables = {
+        "DELEGATION_FEE_PERCENT": "stakingminfee",
+        "MIN_DELEGATION_AMOUNT": "stakingminutxovalue",
+    };
 
-const startService = () => {
-    return supervisordclient.startProcess(serviceName, (err, result) => {
-        if (err) {
-            console.log(`error starting service ${serviceName}`, err);
-        }
-        console.log(`successfully started service ${serviceName}`);
-    });
+    for (const [envVarName, qtumConfigVarName] of Object.entries(envVariablesToQtumConfigVariables)) {
+        config[qtumConfigVarName] = db.get(envVarName);
+    }
+
+    fs.writeFileSync(qtumConfigPath, ini.stringify(config));
 }
 
-const stopService = () => {
-    return supervisordclient.stopProcess(serviceName, (err, result) => {
+const restartQtum = () => {
+    syncQtumConf();
+    const service = "qtum";
+    supervisordclient.stopProcess(service, (err, result) => {
         if (err) {
-            console.log(`error stopping service ${serviceName}`, err);
+            console.log(`error stopping service ${service}`, err);
         }
-        console.log(`successfully stopped service ${serviceName}`);
+
+        supervisordclient.startProcess(service, (err, result) => {
+            if (err) {
+                console.log(`error starting service ${service}`, err);
+            }
+            console.log(`successfully started service ${service}`);
+        });
     });
 }
 
@@ -96,7 +112,7 @@ const main = async () => {
     // set default values
     Object.keys(defaults).map((key) => {
         const val = defaults[key];
-        if (!db.get(key)) {
+        if (db.get(key) === undefined) {
             db.set(key, val);
         }
     });
@@ -104,7 +120,7 @@ const main = async () => {
     // on startup - check if config file exists & start service if so
     if (fs.existsSync(dbFile)) {
         const missingKeys = Object.keys(defaults).reduce((accum, key) => {
-            if (!db.get(key) === undefined || db.get(key) === "") {
+            if (db.get(key) === undefined || db.get(key) === "") {
                 let r = {};
                 r[key] = db.get(key);
                 accum.push(r);
@@ -121,7 +137,7 @@ const main = async () => {
         } else {
             console.log(`A config file exists - attemtping to start service`);
             console.log(censor(db.JSON()));
-            startService();
+            restartQtum();
         }
     }
 

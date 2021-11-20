@@ -13,3 +13,7 @@ th {
     padding:4px;
 }
 
+#addresses li {
+    list-style-type: square;
+    padding: 10px;
+}

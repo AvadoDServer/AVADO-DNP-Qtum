@@ -7,9 +7,9 @@ services:
       args:
         - VERSION=mainnet-fastlane-v0.20.3
     environment:
-      - EXTRA_OPTS=-testnet
+      - EXTRA_OPTS=
     volumes:
-      - 'data:/package/data/qtum'
+      - 'data:/package/data'
     ports:
       - '3888:3888'
       - '3889:3889'
