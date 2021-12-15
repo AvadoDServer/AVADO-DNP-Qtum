@@ -25,7 +25,7 @@ ARG VERSION
 
 RUN set -ex \
     && apt-get update \
-    && apt-get install -y -qq --no-install-recommends ca-certificates curl wget apt-utils jq nodejs npm yarn supervisor nginx
+    && apt-get install -y -qq --no-install-recommends ca-certificates curl wget apt-utils jq nodejs npm cron yarn supervisor nginx
 
 RUN set -ex \
     && echo `curl -s https://api.github.com/repos/qtumproject/qtum/releases/tags/$VERSION | jq -r ".assets[] | select(.name | test(\"x86_64-linux-gnu.tar.gz\")) | .browser_download_url"` > /tmp/qtum_url \
@@ -41,22 +41,29 @@ ENV QTUM_DATA_PATH=/package/data/qtum
 
 COPY files/qtum.conf $QTUM_CONF_PATH
 
-# Download certs
-RUN mkdir /cert
-RUN wget -O /cert/server.crt http://iso.ava.do/server.crt
-RUN wget -O /cert/server.key  http://iso.ava.do/server.key
-
 # Copy supervisor and nginx configs
 COPY files/supervisord.conf /etc/supervisord/
 COPY files/nginx.conf /etc/nginx/
 
-RUN mkdir -p /etc/nginx/certs/
-RUN mv /cert/server.* /etc/nginx/certs/
 RUN useradd nginx
+RUN mkdir -p /etc/nginx/certs/
 
+# Add crontab script to reload certificates
+COPY files/reload-certs.sh /reload-certs.sh
+RUN chmod +x /reload-certs.sh
+
+# Add crontab 
+COPY files/crontab /etc/crontabs/root
+RUN chmod 644 /etc/crontabs/root
+
+# Copy monitor and wizard
 RUN mkdir -p /package/wizard
 COPY --from=wizard-builder /package/wizard/build /package/wizard
 COPY --from=wizard-builder /package/monitor /package/monitor
 COPY --from=web-wallet-builder /package/wallet/dist /package/wallet
 
-ENTRYPOINT supervisord -n -c /etc/supervisord/supervisord.conf
+# copy entrypoint
+COPY files/entrypoint.sh /entrypoint.sh
+RUN chmod 755 /entrypoint.sh
+
+ENTRYPOINT /entrypoint.sh

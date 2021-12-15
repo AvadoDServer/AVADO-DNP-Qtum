@@ -18,7 +18,7 @@ const Comp = () => {
     const [backupRequired, setBackupRequired] = React.useState(undefined);
     const [backupRequiredClockTick, setBackupRequiredClockTick] = React.useState(0);
 
-    const rpcClient = new Client(new RequestManager([new HTTPTransport("http://qtum.avadopackage.com/rpc")]));
+    const rpcClient = new Client(new RequestManager([new HTTPTransport("http://qtum.my.ava.do/rpc")]));
 
     React.useEffect(() => {
         const timer = setInterval(() => {
@@ -100,7 +100,7 @@ const Comp = () => {
                     <a href="http://my.avado/#/Packages/qtum.avado.dnp.dappnode.eth/detail" target="_blank">show node logs</a>
                     <br />
                     <br />
-                    <a href="https://qtum.avadopackage.com/" className="button" target="_blank">Open Wallet UI</a>
+                    <a href="https://qtum.my.ava.do/" className="button" target="_blank">Open Wallet UI</a>
                 </div>
 
                 <div className="setting">
