@@ -1,7 +1,7 @@
 import autobahn from "autobahn-browser";
 import React from "react";
 
-const url = "ws://my.wamp.dnp.dappnode.eth:8080/ws";
+const url = "ws://wamp.my.ava.do:8080/ws";
 const realm = "dappnode_admin";
 
 const Home = () => {
@@ -13,8 +13,6 @@ const Home = () => {
 
         connection.onopen = session => {
             console.log("CONNECTED to \nurl: " + url + " \nrealm: " + realm);
-
-
             session
             .call("listPackages.dappmanager.dnp.dappnode.eth")
             .then(res => {
@@ -38,7 +36,6 @@ const Home = () => {
     }, []);
 
     return null;
-
 };
 
 export default Home;

@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const baseUrl = "http://qtum.avadopackage.com/monitor"
+const baseUrl = "http://qtum.my.ava.do/monitor"
 
 const getEnv = () => {
     return axios.get(`${baseUrl}/getenv`);
