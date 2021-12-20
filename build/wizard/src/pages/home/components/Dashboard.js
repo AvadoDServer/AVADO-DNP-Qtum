@@ -8,7 +8,7 @@ import { RequestManager, HTTPTransport, Client } from "@open-rpc/client-js";
 import "./Dashboard.css";
 import monitor from "../../../util/monitor";
 
-const url = "ws://my.wamp.dnp.dappnode.eth:8080/ws";
+const url = "ws://wamp.my.ava.do:8080/ws";
 const realm = "dappnode_admin";
 
 
@@ -97,7 +97,7 @@ const Comp = () => {
             <>
                 <div className="setting">
                     <QtumInfo rpcClient={rpcClient} />
-                    <a href="http://my.avado/#/Packages/qtum.avado.dnp.dappnode.eth/detail" target="_blank">show node logs</a>
+                    <a href="http://my.ava.do/#/Packages/qtum.avado.dnp.dappnode.eth/detail" target="_blank">show node logs</a>
                     <br />
                     <br />
                     <a href="https://qtum.my.ava.do/" className="button" target="_blank">Open Wallet UI</a>

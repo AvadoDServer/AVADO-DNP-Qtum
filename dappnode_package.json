@@ -1,6 +1,6 @@
 {
   "name": "qtum.avado.dnp.dappnode.eth",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "upstream": "mainnet-fastlane-v0.20.3",
   "title": "Qtum node",
   "description": "This is the Qtum Mainnet node. Qtum is an open sourced public blockchain platform, leveraging the security of UTXO while enabling EVM. Qtum is PoS based and boasts a Decentralized Governance Protocol (DGP) allowing specific blockchain settings to be modified by making use of smart contracts.",
@@ -8,9 +8,9 @@
   "type": "service",
   "autoupdate": true,
   "image": {
-    "path": "qtum.avado.dnp.dappnode.eth_0.0.7.tar.xz",
-    "hash": "/ipfs/QmYZ8f5vXxDVpUav27vt9fwkDELxAi8N1kVGbk71Pv94Ja",
-    "size": 296613548,
+    "path": "qtum.avado.dnp.dappnode.eth_0.0.8.tar.xz",
+    "hash": "/ipfs/QmdyKfGsfVuyioZMvMcYVnutw67MZqB8chMfNQxik2u9Ue",
+    "size": 296562604,
     "restart": "always",
     "environment": [
       "EXTRA_OPTS"
@@ -36,5 +36,5 @@
       "external": true
     }
   },
-  "builddate": "2021-12-15T20:11:29.428Z"
+  "builddate": "2021-12-20T14:47:10.566Z"
 }
