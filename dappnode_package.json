@@ -8,9 +8,6 @@
   "type": "service",
   "autoupdate": true,
   "image": {
-    "path": "qtum.avado.dnp.dappnode.eth_0.0.8.tar.xz",
-    "hash": "/ipfs/QmRc9qPBdKETALJd1wtQRK4NS3g2VekErXjBE8gEWjQCC2",
-    "size": 297571880,
     "restart": "always",
     "environment": [
       "EXTRA_OPTS"
@@ -35,6 +32,5 @@
       "url": "http://qtum.my.ava.do",
       "external": true
     }
-  },
-  "builddate": "2021-12-20T15:27:41.505Z"
+  }
 }
