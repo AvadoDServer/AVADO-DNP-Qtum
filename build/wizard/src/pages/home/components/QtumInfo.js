@@ -142,7 +142,7 @@ const Comp = ({ rpcClient }) => {
                 {!isSynced ? (
                     <div style={{ marginTop: 10 }} className="level">
                         <div className="level-left">
-                            <span class="icon is-medium ">
+                            <span className="icon is-medium ">
                                 <img alt="spinner" src={spinner} />
                             </span>
                             <p className="has-text-white is-size-5 has-text-weight-bold">Waiting for Qtum node to finish bootstrapping & syncing</p>

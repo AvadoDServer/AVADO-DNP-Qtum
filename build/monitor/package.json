@@ -4,6 +4,7 @@
     "restify": "^8.5.1",
     "restify-cors-middleware": "^1.1.1",
     "simple-json-db": "^1.2.3",
-    "supervisord": "^0.1.0"
+    "supervisord": "^0.1.0",
+    "tcp-port-used": "^1.0.2"
   }
 }

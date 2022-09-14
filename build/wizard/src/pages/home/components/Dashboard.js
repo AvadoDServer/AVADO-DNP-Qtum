@@ -107,18 +107,18 @@ const Comp = () => {
 
                     <section className="is-medium has-text-white">
 
-                        <div class="columns">
-                            <div class="column is-half">
+                        <div className="columns">
+                            <div className="column is-half">
 
-                                <nav class="panel is-half">
-                                    <p class="panel-heading">Backup and Restore</p>
+                                <nav className="panel is-half">
+                                    <p className="panel-heading">Backup and Restore</p>
 
-                                    <p class="panel-tabs">
+                                    <p className="panel-tabs">
                                         <a className={`${tab === "backup" ? "is-active  has-text-weight-bold" : ""} has-text-white`} onClick={() => { setTab("backup") }} >Backup</a>
                                         <a className={`${tab === "restore" ? "is-active has-text-weight-bold" : ""} has-text-white`} onClick={() => { setTab("restore") }} >Restore</a>
                                         <a className={`${tab === "import-privkey" ? "is-active has-text-weight-bold" : ""} has-text-white`} onClick={() => { setTab("import-privkey") }} >Import Private Key</a>
                                     </p>
-                                    <div class="panel-block">
+                                    <div className="panel-block">
 
                                         {tab === "backup" && (
                                             <section className="is-medium has-text-white">

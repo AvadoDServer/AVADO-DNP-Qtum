@@ -4,10 +4,14 @@ const fs = require("fs");
 const supervisord = require('supervisord');
 const supervisordclient = supervisord.connect('http://localhost:9001');
 const ini = require('ini');
+const exec = require("child_process").exec;
 
 const JSONdb = require('simple-json-db');
 const dbFile = '/package/data/config.json';
 const db = new JSONdb(dbFile);
+
+var tcpPortUsed = require('tcp-port-used');
+const walletFile = '/package/data/qtum/wallet.dat';
 
 console.log("Monitor starting...");
 
@@ -108,6 +112,23 @@ const censor = (config) => {
     })
 }
 
+const createWallet = async () => {
+    // create a default wallet
+    const QTUM_CONF_PATH = process.env.QTUM_CONF_PATH
+    const QTUM_DATA_PATH = process.env.QTUM_DATA_PATH
+    const cmd = `qtum-cli -conf=${QTUM_CONF_PATH} -datadir=${QTUM_DATA_PATH} createwallet ""`;
+
+    const child = exec(cmd, (error, stdout, stderr) => {
+        if (error) {
+            console.log(`error: ${error.message}`);
+        }
+        if (stderr) {
+            console.log(`error: ${stderr}`);
+        }
+    });
+    await child.stdout.on('data', (data) => console.log(data.toString()));
+}
+
 const main = async () => {
     // set default values
     Object.keys(defaults).map((key) => {
@@ -139,6 +160,19 @@ const main = async () => {
             console.log(censor(db.JSON()));
             restartQtum();
         }
+    }
+
+    // on startup - check that default wallet exists
+    if (!fs.existsSync(walletFile)) {
+        // wait for Qtum RPC
+        tcpPortUsed.waitUntilUsed(3889)
+            .then(function () {
+                const delay = (s) => new Promise(resolve => setTimeout(resolve, s));
+                // extra delay, wallet can not be create immmediatly
+                delay(10000).then(_ => createWallet());
+            }, function (err) {
+                console.log('Error:', err.message);
+            });
     }
 
     server.listen(3000, function () {
