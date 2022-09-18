@@ -19,7 +19,7 @@ WORKDIR /package/wallet
 RUN git clone https://github.com/qtumproject/qtum-web-wallet .
 
 # Final image
-FROM golang:1.13.4-buster
+FROM --platform=linux/amd64 golang:1.13.4-buster
 
 ARG VERSION
 
