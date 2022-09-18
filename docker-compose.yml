@@ -1,7 +1,7 @@
 version: '3.4'
 services:
   qtum.avado.dnp.dappnode.eth:
-    image: 'qtum.avado.dnp.dappnode.eth:0.0.9'
+    image: 'qtum.avado.dnp.dappnode.eth:0.0.10'
     build:
       context: ./build
       args:
