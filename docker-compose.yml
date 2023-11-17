@@ -1,11 +1,11 @@
 version: '3.4'
 services:
   qtum.avado.dnp.dappnode.eth:
-    image: 'qtum.avado.dnp.dappnode.eth:0.0.10'
+    image: 'qtum.avado.dnp.dappnode.eth:0.0.11'
     build:
       context: ./build
       args:
-        - VERSION=v22.1
+        - VERSION=v24.1
     environment:
       - EXTRA_OPTS=
     volumes:
