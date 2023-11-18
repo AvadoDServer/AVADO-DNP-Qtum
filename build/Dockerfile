@@ -1,5 +1,5 @@
 # Build Wizard
-FROM node:15.6.0 as wizard-builder
+FROM node:16 as wizard-builder
 
 RUN apt-get update && apt-get install -y openssl
 
@@ -13,7 +13,7 @@ COPY monitor .
 RUN yarn install
 
 # Build Wallet
-FROM node:15.6.0 as web-wallet-builder
+FROM node:16 as web-wallet-builder
 
 WORKDIR /package/wallet
 RUN git clone https://github.com/qtumproject/qtum-web-wallet .
