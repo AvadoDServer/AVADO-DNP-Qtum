@@ -1,7 +1,7 @@
-version: "3.4"
+version: '3.4'
 services:
   qtum.avado.dnp.dappnode.eth:
-    image: "qtum.avado.dnp.dappnode.eth:0.0.13"
+    image: 'qtum.avado.dnp.dappnode.eth:0.0.13'
     build:
       context: ./build
       args:
@@ -9,17 +9,17 @@ services:
     environment:
       - EXTRA_OPTS=
     volumes:
-      - "data:/package/data"
+      - 'data:/package/data'
     ports:
-      - "3888:3888"
-      - "3889:3889"
-      - "13888:13888"
-      - "13889:13889"
-      - "80:80"
-      - "443:443"
+      - '3888:3888'
+      - '3889:3889'
+      - '13888:13888'
+      - '13889:13889'
+      - '80:80'
+      - '443:443'
     logging:
       options:
         max-size: 10m
-        max-file: "3"
+        max-file: '3'
 volumes:
   data: {}

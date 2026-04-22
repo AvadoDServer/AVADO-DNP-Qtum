@@ -9,9 +9,16 @@
   "autoupdate": true,
   "image": {
     "restart": "always",
-    "environment": ["EXTRA_OPTS"],
-    "ports": ["3888:3888", "3889:3889"],
-    "volumes": ["data:/package/data"]
+    "environment": [
+      "EXTRA_OPTS"
+    ],
+    "ports": [
+      "3888:3888",
+      "3889:3889"
+    ],
+    "volumes": [
+      "data:/package/data"
+    ]
   },
   "author": "AVADO",
   "license": "(C)",
