@@ -1,6 +1,6 @@
 import React from "react";
 import { saveAs } from "file-saver";
-import axios from "axios";
+import monitor from "../../../util/monitor";
 
 function dataUriToBlob(dataURI) {
     if (!dataURI || typeof dataURI !== "string")
@@ -30,8 +30,11 @@ function dataUriToBlob(dataURI) {
 }
 
 const Comp = ({ rpcClient, session, onSuccess }) => {
+    const [message, setMessage] = React.useState(undefined);
+
     async function downloadFile() {
         const walletBackupPath = '/tmp/wallet.backup';
+        setMessage(undefined);
 
         try {
             await rpcClient.request({ method: 'backupwallet', params: [walletBackupPath] })
@@ -59,6 +62,7 @@ const Comp = ({ rpcClient, session, onSuccess }) => {
             ));
 
             if (copyFileFromResponse.success !== true) {
+                setMessage("The backup could not be downloaded. Please try again.");
                 return;
             }
 
@@ -70,24 +74,34 @@ const Comp = ({ rpcClient, session, onSuccess }) => {
 
 
             if (!dataUri) {
+                setMessage("The backup could not be downloaded. Please try again.");
                 return;
             }
 
             const blob = dataUriToBlob(dataUri);
-            const fileName = 'qtum-wallet.dat';
+            const fileName = `qtum-wallet-${new Date().toISOString().slice(0, 10)}.dat`;
 
             saveAs(blob, fileName);
+            try {
+                await monitor.backupDone();
+            } catch (e) {
+                console.error(`Could not record the backup: ${e.message}`);
+            }
             if (onSuccess) {
                 await onSuccess();
             }
         } catch (e) {
             console.error(`Error on downloading backup ${walletBackupPath}: ${e.stack}`);
+            setMessage("The backup could not be downloaded. If the Qtum node is still starting, please try again in a few minutes.");
         }
     }
 
 
     return (
-        <button className="button" onClick={downloadFile}>Download Wallet backup</button>
+        <>
+            <button className="button" onClick={downloadFile}>Download Wallet backup</button>
+            {message && (<p className="is-size-7" style={{ marginTop: 5 }}>{message}</p>)}
+        </>
     );
 
 }

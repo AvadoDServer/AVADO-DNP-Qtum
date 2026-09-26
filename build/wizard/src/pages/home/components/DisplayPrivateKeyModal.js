@@ -18,6 +18,8 @@ const Comp = ({ address, privateKey, onClose }) => {
                             <br/>
                             <p>WIF / Private Key</p>
                             <p>{privateKey}</p>
+                            <br/>
+                            <p className="has-text-danger">Anyone who has this key can take the coins on this address. Never share it and never type it into a website you do not trust.</p>
                         </section>
                     </div>
                 </div>
