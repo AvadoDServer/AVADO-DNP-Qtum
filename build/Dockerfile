@@ -1,11 +1,18 @@
 # Build Wizard
 FROM node:16-bullseye as wizard-builder
 
-# Debian 11 (bullseye) reached its end of life on 2026-08-31 and its security
-# updates were removed from deb.debian.org. Use their final state from
-# snapshot.debian.org instead.
+# Debian 11 (bullseye) reached its end of life on 2026-08-31. Its security
+# updates were removed from deb.debian.org, and the rest will follow. Use the
+# permanent locations instead: archive.debian.org for bullseye and
+# bullseye-updates (the same package lists as deb.debian.org), and the final
+# state of bullseye-security from snapshot.debian.org. The build fails if the
+# base image lists other sources.
 ARG DEBIAN_SECURITY_SNAPSHOT=20260831T000000Z
-RUN sed -i "s#http://deb.debian.org/debian-security#http://snapshot.debian.org/archive/debian-security/${DEBIAN_SECURITY_SNAPSHOT}#" /etc/apt/sources.list \
+RUN sed -i \
+        -e "s#^deb http://deb.debian.org/debian-security #deb http://snapshot.debian.org/archive/debian-security/${DEBIAN_SECURITY_SNAPSHOT} #" \
+        -e "s#^deb http://deb.debian.org/debian #deb http://archive.debian.org/debian #" \
+        /etc/apt/sources.list \
+    && ! grep -q "^deb http://deb.debian.org" /etc/apt/sources.list \
     && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot-valid-until
 RUN apt-get update && apt-get install -y openssl
 
@@ -40,11 +47,18 @@ ARG QTUM_SHA256
 ARG QTUM_LEGACY_VERSION=v29.1
 ARG QTUM_LEGACY_SHA256=c04e3f49c8e21a7c910b2373f9a540794eca262c83a5afbe040e38b3f5b2da4b
 
-# Debian 11 (bullseye) reached its end of life on 2026-08-31 and its security
-# updates were removed from deb.debian.org. Use their final state from
-# snapshot.debian.org instead.
+# Debian 11 (bullseye) reached its end of life on 2026-08-31. Its security
+# updates were removed from deb.debian.org, and the rest will follow. Use the
+# permanent locations instead: archive.debian.org for bullseye and
+# bullseye-updates (the same package lists as deb.debian.org), and the final
+# state of bullseye-security from snapshot.debian.org. The build fails if the
+# base image lists other sources.
 ARG DEBIAN_SECURITY_SNAPSHOT=20260831T000000Z
-RUN sed -i "s#http://deb.debian.org/debian-security#http://snapshot.debian.org/archive/debian-security/${DEBIAN_SECURITY_SNAPSHOT}#" /etc/apt/sources.list \
+RUN sed -i \
+        -e "s#^deb http://deb.debian.org/debian-security #deb http://snapshot.debian.org/archive/debian-security/${DEBIAN_SECURITY_SNAPSHOT} #" \
+        -e "s#^deb http://deb.debian.org/debian #deb http://archive.debian.org/debian #" \
+        /etc/apt/sources.list \
+    && ! grep -q "^deb http://deb.debian.org" /etc/apt/sources.list \
     && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot-valid-until
 RUN set -ex \
     && apt-get update \
