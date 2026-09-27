@@ -5,6 +5,7 @@ import ConfigInput from "./ConfigInput";
 import spinner from "../../../assets/spinner.svg";
 import checkmark from "../../../assets/green-checkmark-line.svg";
 import humanizeDuration from "humanize-duration";
+import monitor from "../../../util/monitor";
 
 const Comp = ({ rpcClient }) => {
 
@@ -18,6 +19,7 @@ const Comp = ({ rpcClient }) => {
     const [isPrivateKeyModalVisible, setIsPrivateKeyModalVisible] = React.useState(false);
     const [privateKeyAddress, setPrivateKeyAddress] = React.useState(undefined);
     const [privateKey, setPrivateKey] = React.useState(undefined);
+    const [privateKeyError, setPrivateKeyError] = React.useState(undefined);
 
     React.useEffect(() => {
         const timer = setInterval(() => {
@@ -63,8 +65,9 @@ const Comp = ({ rpcClient }) => {
         }
 
         const fetchWalletInfo = async () => {
-            const walletInfo = await rpcClient.request({ method: 'getwalletinfo' });
-            setBalance(walletInfo.balance);
+            // Qtum v30 removed the balance fields from getwalletinfo
+            const balances = await rpcClient.request({ method: 'getbalances' });
+            setBalance(balances.mine.trusted);
         }
 
         const fetchStakingInfo = async () => {
@@ -90,12 +93,17 @@ const Comp = ({ rpcClient }) => {
         fetchPeers();
     }, [clockTick]);
 
+    // Qtum v30 removed dumpprivkey; the monitor reads the key from the wallet's descriptors
     const fetchPrivateKey = async (address) => {
-        const privateKey = await rpcClient.request({ method: 'dumpprivkey', params: [address] });
-
-        setPrivateKeyAddress(address);
-        setPrivateKey(privateKey);
-        setIsPrivateKeyModalVisible(true);
+        setPrivateKeyError(undefined);
+        try {
+            const response = await monitor.getPrivateKey(address);
+            setPrivateKeyAddress(address);
+            setPrivateKey(response.data.privateKey);
+            setIsPrivateKeyModalVisible(true);
+        } catch (err) {
+            setPrivateKeyError(monitor.errorMessage(err, "The private key could not be shown. Please try again."));
+        }
     }
 
     // if (!node) {
@@ -165,14 +173,15 @@ const Comp = ({ rpcClient }) => {
                             return <>
                                 <li key={address}>
                                     <span>{address}</span>
-                                    <button style={{ marginLeft: 5 }} onClick={(_) => fetchPrivateKey(address)}>Show WIF</button>
+                                    <button style={{ marginLeft: 5 }} onClick={(_) => fetchPrivateKey(address)}>Show private key</button>
                                 </li>
                             </>
                         })}
                     </ul>
+                    {privateKeyError && (<p className="has-text-warning">{privateKeyError}</p>)}
                 </div>
 
-                {isPrivateKeyModalVisible && <DisplayPrivateKeyModal address={privateKeyAddress} privateKey={privateKey} onClose={() => { setIsPrivateKeyModalVisible(false) }} />}
+                {isPrivateKeyModalVisible && <DisplayPrivateKeyModal address={privateKeyAddress} privateKey={privateKey} onClose={() => { setIsPrivateKeyModalVisible(false); setPrivateKey(undefined); }} />}
 
             </section>
         </>);

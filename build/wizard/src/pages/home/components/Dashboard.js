@@ -4,6 +4,7 @@ import autobahn from "autobahn-browser";
 import DownloadBackup from "./DownloadBackup";
 import RestoreBackup from "./RestoreBackup";
 import ImportPrivKey from "./ImportPrivKey";
+import WalletStatusBanner from "./WalletStatusBanner";
 import { RequestManager, HTTPTransport, Client } from "@open-rpc/client-js";
 import "./Dashboard.css";
 import monitor from "../../../util/monitor";
@@ -18,7 +19,9 @@ const Comp = () => {
     const [backupRequired, setBackupRequired] = React.useState(undefined);
     const [backupRequiredClockTick, setBackupRequiredClockTick] = React.useState(0);
 
-    const rpcClient = new Client(new RequestManager([new HTTPTransport("http://qtum.my.ava.do/rpc")]));
+    // Same address the wizard was opened at: nginx only accepts /rpc calls
+    // from the wizard's own page
+    const rpcClient = new Client(new RequestManager([new HTTPTransport(`${window.location.origin}/rpc`)]));
 
     React.useEffect(() => {
         const timer = setInterval(() => {
@@ -44,7 +47,7 @@ const Comp = () => {
 
         // connection closed, lost or unable to connect
         connection.onclose = (reason, details) => {
-            this.setState({ connectedToDAppNode: false });
+            setWampSession(undefined);
             console.error("CONNECTION_CLOSE", { reason, details });
         };
 
@@ -83,9 +86,7 @@ const Comp = () => {
                 <p className="is-size-5 has-text-white">First, you need to backup your wallet..</p>
                 <br />
                 <DownloadBackup rpcClient={rpcClient} session={wampSession} onSuccess={async () => {
-                    await monitor.setEnv({
-                        BACKUP_REQUIRED: false,
-                    });
+                    // the monitor records the backup (BACKUP_REQUIRED=false)
                     setBackupRequired(false);
                 }} />
             </>
@@ -128,14 +129,14 @@ const Comp = () => {
                                         )}
                                         {tab === "restore" && (
                                             <section className="is-medium has-text-white">
-                                                <p className="">Here you can upload your wallet backup. If you want to restore your wallet from a previous installation.</p>
+                                                <p className="">Choose a wallet backup file to restore your wallet, for example from a previous installation. Older backups are upgraded to the new wallet format automatically.</p>
                                                 <RestoreBackup session={wampSession} />
                                             </section>
                                         )}
                                         {tab === "import-privkey" && (
                                             <section className="is-medium has-text-white">
                                                 <p className="">Here you can import a private key. Do not forget to backup your wallet after importing.</p>
-                                                <ImportPrivKey rpcClient={rpcClient} />
+                                                <ImportPrivKey />
                                             </section>
                                         )}
                                     </div>
@@ -157,6 +158,7 @@ const Comp = () => {
                     </div>
                 </div>
                 <p className="">A node and wallet for interacting with the Qtum network</p>
+                <WalletStatusBanner rpcClient={rpcClient} session={wampSession} />
             </section>
             <br />
             {backupRequired === undefined ? <p className="has-text-white">loading..</p> : backupRequired ? renderBackup() : renderInfo()}

@@ -1,11 +1,12 @@
 version: '3.4'
 services:
   qtum.avado.dnp.dappnode.eth:
-    image: 'qtum.avado.dnp.dappnode.eth:0.0.13'
+    image: 'qtum.avado.dnp.dappnode.eth:0.0.14'
     build:
       context: ./build
       args:
-        - VERSION=v29.1
+        - VERSION=v30.2
+        - QTUM_SHA256=698dbbd6274d3645e27775c39c1623fa69fa2d400312b44150d127167fa743d2
     environment:
       - EXTRA_OPTS=
     volumes:
