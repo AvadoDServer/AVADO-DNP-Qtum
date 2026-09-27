@@ -170,13 +170,23 @@ export function readPackage(root, ref = null) {
 // the bump bot and not published by the release; boxes keep the version they
 // have. Removing the file (a PR the owner reviews and merges) ends the hold.
 // Returns the reason, or null.
-const firstLine = (text) => String(text).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) || 'held (no reason given)';
+// holdText: the reason in a hold file's text (for a file read through the API).
+export const holdText = (text) => String(text).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) || 'held (no reason given)';
 export function holdReason(root, ref = null) {
   if (ref) {
-    try { return firstLine(git(root, ['show', `${ref}:${HOLD_FILE}`])); } catch { return null; }
+    try { return holdText(git(root, ['show', `${ref}:${HOLD_FILE}`])); } catch { return null; }
   }
   const p = join(root, HOLD_FILE);
-  return existsSync(p) ? firstLine(readFileSync(p, 'utf8')) : null;
+  return existsSync(p) ? holdText(readFileSync(p, 'utf8')) : null;
+}
+
+// Is the version at a ref published already? (a "Release <name> <version>"
+// commit, or its hash in releases.json)
+export function isReleased(root, ref) {
+  const m = readManifest(root, ref);
+  let record = {};
+  try { record = JSON.parse(git(root, ['show', `${ref}:${RELEASES}`])); } catch { /* none yet */ }
+  return Boolean(record[m.version]?.hash) || releasedVersions(root, m.name, ref).includes(m.version);
 }
 
 // The content id of a commit (scripts/ci/content-id.sh): a hash of every
@@ -228,15 +238,42 @@ export function gitAuthEnv(token) {
   };
 }
 
-export function fetchBranch(root, token, branch) {
-  git(root, ['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { env: gitAuthEnv(token) });
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// A fetch is a read: tried three times (a GitHub hiccup must not fail a run).
+export function fetchBranch(root, token, branch, { tries = 3, delayMs = 5000 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      git(root, ['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { env: gitAuthEnv(token) });
+      return;
+    } catch (err) {
+      if (attempt >= tries) throw err;
+      console.log(`::warning::fetching ${branch} failed (attempt ${attempt} of ${tries}): ${String(err.message).split('\n')[0]}; trying again`);
+      sleepSync(delayMs * attempt);
+    }
+  }
 }
 
+// GitHub refuses a push that brings a change of .github/workflows/ into a
+// branch unless the token may write workflows (GITHUB_TOKEN never may; a PAT
+// only with the "Workflows" permission):
+//   "refusing to allow a GitHub App to create or update workflow `.github/workflows/gate.yml` without `workflows` permission"
+//   "refusing to allow a Personal Access Token to create or update workflow ... without `workflow` scope"
+export const isWorkflowPushRefusal = (text) => /refusing to allow an? .{1,60} to create or update workflow/i.test(String(text || ''));
+
 // force: true overwrites the branch; lease (a sha, or '' for "must not exist")
-// overwrites it only if it is still where this run saw it.
+// overwrites it only if it is still where this run saw it. A refused push
+// throws an error whose message has git's own words (err.gitOutput).
 export function pushHead(root, token, branch, { force = false, lease = undefined } = {}) {
   const how = lease !== undefined ? [`--force-with-lease=refs/heads/${branch}:${lease}`] : force ? ['--force'] : [];
-  execFileSync('git', ['-C', root, 'push', '-q', ...how, 'origin', `HEAD:refs/heads/${branch}`], { stdio: 'inherit', env: gitAuthEnv(token) });
+  try {
+    execFileSync('git', ['-C', root, 'push', '-q', ...how, 'origin', `HEAD:refs/heads/${branch}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: gitAuthEnv(token) });
+  } catch (err) {
+    const said = `${err.stderr || ''}\n${err.stdout || ''}`.trim();
+    if (said) console.log(said);
+    const short = said.split('\n').map((l) => l.trim()).filter(Boolean).slice(-3).join(' | ');
+    throw Object.assign(new Error(`git push to ${branch} failed: ${short || err.message}`), { gitOutput: said });
+  }
 }
 
 // The sha a branch has on the remote now ('' when it does not exist).
@@ -298,6 +335,25 @@ export function hoursBetween(a, b) {
 
 export function fmtUtc(d) {
   return new Date(d).toISOString().replace('T', ' ').replace(/:\d\d\.\d+Z$/, ' UTC');
+}
+
+// Release runs on the default branch's head (the gate). A run counts while it
+// is queued or running, or when it ended in success or failure (a failure has
+// its own issue). A cancelled, timed-out or never-started run published
+// nothing and told nobody: it is "lost", and the gate starts another one.
+export function releaseRunsOnHead(runs, head) {
+  const onHead = (runs || []).filter((r) => r.head_sha === head);
+  const counts = (r) => r.status !== 'completed' || r.conclusion === 'success' || r.conclusion === 'failure';
+  return { live: onHead.find(counts) || null, lost: onHead.filter((r) => !counts(r)) };
+}
+
+// report.mjs: did the last finished run of the same workflow before this one
+// fail too? (runs: the workflow's runs, any order; skipped runs do not count)
+export function previousRunFailed(runs, runId) {
+  const prev = (runs || [])
+    .filter((r) => Number(r.id) < Number(runId) && r.status === 'completed' && r.conclusion !== 'skipped')
+    .sort((a, b) => Number(b.id) - Number(a.id))[0];
+  return Boolean(prev) && ['failure', 'timed_out', 'startup_failure'].includes(prev.conclusion);
 }
 
 // GitHub Actions log helpers.

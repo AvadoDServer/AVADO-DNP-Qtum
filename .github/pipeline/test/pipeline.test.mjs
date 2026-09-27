@@ -6,11 +6,14 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { decide, logExcerpt, ownerMergeFiles, retryable } from '../gate.mjs';
-import { forkInfo, forkEta, forkState, bodyHashes, assetDigest, tarballSha256, syncForkIssues } from '../lib/qtum.js';
+import { decide, logExcerpt, ownerMergeFiles, retryable, pinChanges } from '../gate.mjs';
+import {
+  forkInfo, forkEta, forkState, forkProgress, bodyHashes, assetDigest, tarballSha256, publishedSha256, assertPinUnchanged, syncForkIssues,
+} from '../lib/qtum.js';
 import {
   compareVersions, bumpPatch, maxVersion, stableReleases, isMajorBump, readQtumVersion, setQtumVersion, readQtumSha256, setQtumSha256,
-  readImageTag, setImageVersion, setManifestField, readPackage, bumpMarker, markerTarget, holdReason, contentId, assetName,
+  readImageTag, setImageVersion, setManifestField, readPackage, bumpMarker, markerTarget, holdReason, holdText, contentId, assetName,
+  isWorkflowPushRefusal, releaseRunsOnHead, previousRunFailed,
 } from '../lib/common.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -121,6 +124,9 @@ test('checks that failed on an outside step run once more, without an issue', ()
     assert.ok(!retryable([...outside, { name: 'package', step }]), step);
   }
   assert.ok(!retryable([{ name: 'Plan (unit tests, identity, tarball)', step: 'Unit tests of the pipeline rules' }]));
+  assert.ok(!retryable([{ name: 'Plan (unit tests, identity, tarball)', step: 'Qtum release tarball (sha256 as published)' }]),
+    'the tarball check only fails on a real difference (GitHub not answering is a warning there)');
+  assert.ok(retryable([{ name: 'package', steps: ['Production image cache (restore)'] }]));
   assert.ok(!retryable([]));
   const d = decide({ ...base, checks: 'failure', rerun: 'package: Boots on Qtum mainnet' });
   assert.equal(d.action, 'wait');
@@ -320,4 +326,122 @@ test('the content id ignores the release record only', () => {
   assert.notEqual(contentId(dir, b), contentId(dir, c));
   assert.notEqual(contentId(dir, c), contentId(dir, d), 'only the root releases.json is ignored');
   assert.match(contentId(dir, a), /^[0-9a-f]{40}$/);
+});
+
+test('a held package is never merged and sends no email, whatever else is true', () => {
+  for (const extra of [{}, { mandatory: { source: 'fork' } }, { major: true }, { checks: 'failure' }, { ownerFiles: ['hold'] }]) {
+    const d = decide({ ...base, now: at(500), held: 'waits for the wallet fix', ...extra });
+    assert.equal(d.action, 'wait', JSON.stringify(extra));
+    assert.equal(d.cause, 'held');
+    assert.match(d.why, /waits for the wallet fix/);
+  }
+  assert.equal(holdText('# why\n\nwaits for the wallet fix\n'), 'waits for the wallet fix');
+});
+
+test('the Qtum pin is the bot\'s: a person changing VERSION or QTUM_SHA256 leaves the merge to the owner', () => {
+  const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
+  assert.deepEqual(pinChanges(compose, compose), []);
+  const sha = readQtumSha256(compose) === 'a'.repeat(64) ? 'b'.repeat(64) : 'a'.repeat(64);
+  assert.deepEqual(pinChanges(compose, setQtumSha256(compose, sha)), ['QTUM_SHA256']);
+  assert.deepEqual(pinChanges(compose, setQtumSha256(setQtumVersion(compose, 'v99.1'), sha)), ['VERSION', 'QTUM_SHA256']);
+  assert.deepEqual(pinChanges(compose, compose.replace(/QTUM_SHA256=\S+/, 'QTUM_SHA256=typo')), ['QTUM_SHA256'], 'a broken line counts as a change');
+  const build = compose.replace(/^(\s*image:.*)$/m, '$1  ');
+  assert.deepEqual(pinChanges(compose, build), [], 'other lines are not the pin');
+});
+
+test('a Qtum tarball that changed after it was pinned is never re-pinned', () => {
+  const good = '0b1f612f0762184240c785c66b548f2dab8eed5e25481c635806ddf81807aa86';
+  const other = 'c'.repeat(64);
+  const asset = { name: 'qtum-27.1-x86_64-linux-gnu.tar.gz', size: 10, browser_download_url: 'x', digest: `sha256:${good}` };
+  const release = { ...rel('v27.1'), assets: [asset] };
+  assert.deepEqual(publishedSha256(release), { name: asset.name, missing: false, digest: good, listed: good });
+  assert.doesNotThrow(() => assertPinUnchanged({ release, pinned: good, where: 'PR #5' }));
+  assert.throws(() => assertPinUnchanged({ release: { ...release, assets: [{ ...asset, digest: `sha256:${other}` }] }, pinned: good, where: 'PR #5' }),
+    /CHANGED after it was pinned: PR #5 pins sha256 0b1f.*it is c{64} according to GitHub's asset digest/);
+  assert.throws(() => assertPinUnchanged({ release, pinned: other, where: 'PR #5' }), /0b1f\w+ according to GitHub's asset digest and 0b1f\w+ according to the release notes/);
+  assert.throws(() => assertPinUnchanged({ release, pinned: good, where: 'PR #5', now: { sha256: other, sources: ['downloaded and hashed'] } }), /c{64} according to the file GitHub serves now/);
+  const bare = { ...rel('v30.2'), assets: [{ name: 'qtum-30.2-x86_64-linux-gnu.tar.gz' }] };
+  assert.doesNotThrow(() => assertPinUnchanged({ release: bare, pinned: other, where: 'PR #5' }), 'nothing published to compare without a download');
+  assert.equal(publishedSha256({ ...bare, assets: [] }).missing, true);
+});
+
+test('the tarball download is tried again after a network error, not after a 404', async () => {
+  const good = '0b1f612f0762184240c785c66b548f2dab8eed5e25481c635806ddf81807aa86';
+  const release = { ...rel('v27.1'), assets: [{ name: 'qtum-27.1-x86_64-linux-gnu.tar.gz', size: 10, browser_download_url: 'x', digest: `sha256:${good}` }] };
+  let calls = 0;
+  const flaky = async () => { calls++; if (calls === 1) throw new TypeError('fetch failed'); return { sha256: good, bytes: 10 }; };
+  assert.equal((await tarballSha256(release, { hash: flaky, retryDelayMs: 1 })).sha256, good);
+  assert.equal(calls, 2);
+  calls = 0;
+  const gone = async () => { calls++; throw Object.assign(new Error('HTTP 404'), { status: 404 }); };
+  await assert.rejects(tarballSha256(release, { hash: gone, retryDelayMs: 1 }), /404/);
+  assert.equal(calls, 1);
+});
+
+test('GitHub refusing a workflow change in a push is recognised', () => {
+  assert.ok(isWorkflowPushRefusal(' ! [remote rejected] HEAD -> avado-bot/bump (refusing to allow a GitHub App to create or update workflow `.github/workflows/gate.yml` without `workflows` permission)'));
+  assert.ok(isWorkflowPushRefusal('refusing to allow a Personal Access Token to create or update workflow `.github/workflows/bump.yml` without `workflow` scope'));
+  assert.ok(isWorkflowPushRefusal('refusing to allow an OAuth App to create or update workflow `.github/workflows/x.yml` without `workflow` scope'));
+  assert.ok(!isWorkflowPushRefusal(' ! [rejected] HEAD -> avado-bot/bump (stale info)'));
+  assert.ok(!isWorkflowPushRefusal(undefined));
+});
+
+test('a cancelled or timed-out release run does not count as done', () => {
+  const head = 'h'.repeat(40);
+  const run = (id, status, conclusion, sha = head) => ({ id, head_sha: sha, status, conclusion, html_url: `r/${id}` });
+  assert.equal(releaseRunsOnHead([run(3, 'in_progress', null)], head).live.id, 3);
+  assert.equal(releaseRunsOnHead([run(3, 'completed', 'failure')], head).live.id, 3, 'a failure has its own issue');
+  const lost = releaseRunsOnHead([run(5, 'completed', 'cancelled'), run(4, 'completed', 'timed_out'), run(3, 'completed', 'success', 'o'.repeat(40))], head);
+  assert.equal(lost.live, null);
+  assert.deepEqual(lost.lost.map((r) => r.id), [5, 4]);
+  assert.equal(releaseRunsOnHead([run(6, 'queued', null), run(5, 'completed', 'cancelled')], head).live.id, 6);
+  assert.deepEqual(releaseRunsOnHead(undefined, head), { live: null, lost: [] });
+});
+
+test('one failed robot run sends no email; the second in a row does', () => {
+  const r = (id, conclusion, status = 'completed') => ({ id, status, conclusion });
+  assert.equal(previousRunFailed([r(10, null, 'in_progress'), r(9, 'success'), r(8, 'failure')], 10), false);
+  assert.equal(previousRunFailed([r(10, null, 'in_progress'), r(9, 'failure')], 10), true);
+  assert.equal(previousRunFailed([r(10, null, 'in_progress'), r(9, 'skipped'), r(8, 'timed_out')], 10), true, 'skipped runs do not count');
+  assert.equal(previousRunFailed([r(11, 'failure'), r(10, null, 'in_progress'), r(9, 'success')], 10), false, 'only runs before this one');
+  assert.equal(previousRunFailed([], 10), false);
+});
+
+test('the hard-fork issue says what really stands between the fork and production', () => {
+  const f = { tag: 'v31.1', block: 5483000, deadline: new Date('2026-01-12T01:24:40Z') };
+  const open = forkProgress({ repo: 'o/r', f, mainQtum: 'v30.2', pr: { number: 7 } });
+  assert.match(open.prText, /PR #7/);
+  assert.match(open.steps[0], /bump PR is merged/);
+  assert.match(forkProgress({ repo: 'o/r', f, mainQtum: 'v30.2', pr: null }).prText, /no bump PR open yet/);
+  const merged = forkProgress({ repo: 'o/r', f, mainQtum: 'v31.1', pr: null, mainReleased: true });
+  assert.match(merged.prText, /merged: the default branch has Qtum v31\.1 and it is on the \*\*staging\*\* store/);
+  assert.doesNotMatch(merged.steps.join(' '), /bump PR/);
+  assert.match(merged.steps.at(-1), /Publish it to production/);
+  assert.match(forkProgress({ repo: 'o/r', f, mainQtum: 'v31.2', pr: null }).prText, /not on staging yet/);
+  const held = forkProgress({ repo: 'o/r', f, mainQtum: 'v30.2', pr: null, held: 'waits for the wallet fix' });
+  assert.match(held.prText, /HELD\*\* \(waits for the wallet fix\).*no bump PR will come/);
+  assert.match(held.steps[0], /End the hold/);
+});
+
+test('the Dockerfile accepts exactly the pinned Qtum version, also a three-part tag', () => {
+  const dockerfile = readFileSync(join(ROOT, 'build/Dockerfile'), 'utf8');
+  const lines = dockerfile.split('\n').filter((l) => /^\s*&& (case "\$VERSION"|line="\$\(qtumd -version|case "\$line )/.test(l));
+  assert.equal(lines.length, 3, 'the version check in build/Dockerfile');
+  const script = lines.map((l) => l.replace(/^\s*&& /, '').replace(/\s*\\$/, '')).join(' && ');
+  const dir = mkdtempSync(join(tmpdir(), 'qtumd-'));
+  const check = (printed, version) => {
+    writeFileSync(join(dir, 'qtumd'), `#!/bin/sh\necho "${printed}"\necho "Copyright (C) 2026"\n`, { mode: 0o755 });
+    try {
+      execFileSync('sh', ['-c', script], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, VERSION: version }, stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  assert.ok(check('Qtum Core daemon version v30.2.0 qtumd', 'v30.2'));
+  assert.ok(check('Qtum Core daemon version v30.2.1 qtumd', 'v30.2.1'), 'a three-part tag');
+  assert.ok(check('Qtum Core daemon version v30.2.1', 'v30.2.1'), 'without the trailing program name');
+  assert.ok(!check('Qtum Core daemon version v30.2.0 qtumd', 'v30.2.1'));
+  assert.ok(!check('Qtum Core daemon version v30.2.1 qtumd', 'v30.2'));
+  assert.ok(!check('Qtum Core daemon version v30.20.0 qtumd', 'v30.2'));
 });

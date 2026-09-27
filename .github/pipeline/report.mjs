@@ -7,13 +7,17 @@
 //
 // failure: opens (or updates) one issue per workflow, assigned to the owner,
 // with the run link, what the script said went wrong (failureFile()) and a
-// ready-to-paste Claude Code prompt.
+// ready-to-paste Claude Code prompt. The scheduled robots (Bump Qtum, Gate) run
+// every few hours, so ONE failed run (a GitHub or qtum.info hiccup) opens no
+// issue: the owner is emailed when the run before it failed too. A failed
+// Release is reported at once. JOB_STATUS=cancelled (a cancel or a timeout)
+// counts as a failure.
 // success: closes that issue if it is open.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { makeClient } from './lib/gh.js';
 import { upsertIssue, findIssue, closeIssue } from './lib/issue.js';
-import { env, failureFile } from './lib/common.js';
+import { env, failureFile, previousRunFailed } from './lib/common.js';
 
 const [outcome, workflow] = process.argv.slice(2);
 const repo = env('GITHUB_REPOSITORY');
@@ -21,6 +25,9 @@ const runId = env('GITHUB_RUN_ID', '0');
 const runUrl = `${env('GITHUB_SERVER_URL', 'https://github.com')}/${repo}/actions/runs/${runId}`;
 const gh = makeClient({ token: env('GITHUB_TOKEN') });
 const key = `workflow-${String(workflow).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+const cancelled = env('JOB_STATUS') === 'cancelled';
+// Workflows whose single failure waits for the next run before emailing.
+const SCHEDULED = new Set(['Bump Qtum', 'Gate']);
 
 const effect = {
   Release: `A new version did not reach the staging store (read the error above: it says which versions were published and which not). Boxes are not affected: production only changes when you publish it in editstore.
@@ -39,14 +46,33 @@ function detail() {
   }
 }
 
+// Did the run of this workflow before this one fail too? (true when unknown)
+async function failedBefore() {
+  const file = /\.github\/workflows\/([^@]+)@/.exec(env('GITHUB_WORKFLOW_REF', ''))?.[1];
+  if (!file) return true;
+  try {
+    const runs = await gh.get(`repos/${repo}/actions/workflows/${file}/runs?per_page=20&exclude_pull_requests=true`);
+    return previousRunFailed(runs?.workflow_runs, runId);
+  } catch {
+    return true;
+  }
+}
+
 async function main() {
   if (outcome === 'success') {
     const issue = await findIssue(gh, repo, key);
     if (issue?.state === 'open') await closeIssue(gh, repo, issue, `Works again: ${runUrl}`);
     return;
   }
+  if (SCHEDULED.has(workflow)) {
+    const open = (await findIssue(gh, repo, key))?.state === 'open';
+    if (!open && !(await failedBefore())) {
+      console.log(`::warning::"${workflow}" failed once (${runUrl}); the owner is emailed if the next run fails too`);
+      return;
+    }
+  }
   const said = detail();
-  const body = `**What happened:** the "${workflow}" workflow failed: ${runUrl}
+  const body = `**What happened:** the "${workflow}" workflow ${cancelled ? 'was cancelled or ran out of time' : 'failed'}: ${runUrl}
 ${said ? `\n**The error:**\n\`\`\`text\n${said}\n\`\`\`\n` : ''}
 **What it means:** ${effect}
 
@@ -64,6 +90,9 @@ Read the failed log with: gh run view ${runId} -R ${repo} --log-failed
 Explain the cause in plain words. If it is a bug in .github/workflows or .github/pipeline, fix it on a new branch and open a pull request (do not push to main).
 If it is an outside problem (GitHub, AVADO's IPFS node or store, qtum.info), say so and say whether re-running the workflow is enough.
 If the log shows "Bad credentials", HTTP 401 or 403, or git exit code 128 on a push, the PAT_TOKEN secret (the owner's personal token) has probably expired: say so; it must be renewed in Settings -> Secrets and variables -> Actions.
+If the log shows "refusing to allow ... to create or update workflow", the default branch changed a file in .github/workflows/ and the bot's token may not bring that into its branch: say so; the error says what to do (merge the default branch into the bot's branch by hand, or give PAT_TOKEN "Workflows: Read and write").
+If the log says a Qtum tarball CHANGED after it was pinned, do not re-pin it: tell me what changed, from the release page, so I can ask Qtum.
+If the error names RPC_TOKEN, nothing is wrong in the repo: the organisation secret must be given to this repository again.
 Never change the package name, the volume, the host ports or the environment variable names in dappnode_package.json.
 \`\`\`
 </details>

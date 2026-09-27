@@ -41,9 +41,9 @@ import { makeClient } from './lib/gh.js';
 import { upsertIssue, closeIssue, findIssue, listOpenIssues } from './lib/issue.js';
 import { forkInfo, syncForkIssues, readQtumHeight, forkWhen } from './lib/qtum.js';
 import {
-  BOT_EMAIL, BOT_BRANCH, UPSTREAM_REPO, PR_CHECKS_PATH, MANIFEST, COMPOSE, RELEASES, compareVersions, stableReleases, isMajorBump,
-  readQtumVersion, readPackage, holdReason, releasedVersions, readProductionVersions, git, fetchBranch, retry, isTransient, env,
-  hoursBetween, fmtUtc, recordFailure,
+  BOT_EMAIL, BOT_BRANCH, UPSTREAM_REPO, PR_CHECKS_PATH, MANIFEST, COMPOSE, HOLD_FILE, compareVersions, stableReleases, isMajorBump,
+  readQtumVersion, readQtumSha256, readPackage, holdReason, holdText, isReleased, releaseRunsOnHead, readProductionVersions, git, fetchBranch,
+  retry, isTransient, env, hoursBetween, fmtUtc, recordFailure,
 } from './lib/common.js';
 
 export const CHECKS_CONTEXT = 'avado/checks';
@@ -57,14 +57,18 @@ const ALLOWED_BOT_FILES = new Set([COMPOSE, MANIFEST]);
 export const OWNER_MERGE_FILES = /^(\.github\/|scripts\/|test\/|hold$|releases\.json$)/;
 // Steps whose failure is usually outside our package (public network, IPFS
 // node, production store, GitHub downloads, the runner): they are re-run once.
-export const RETRYABLE_STEPS = /^(AVADOSDK build|Boots on Qtum mainnet|Production image|Old Qtum builds|Throwaway IPFS node|Qtum release tarball|Free disk space|Set up job|Run actions\/|Post Run actions\/|Complete job)/;
+// Not the tarball check: it only fails on a real difference (a wrong pin, a
+// missing release, a replaced file); GitHub not answering is only a warning there.
+export const RETRYABLE_STEPS = /^(AVADOSDK build|Boots on Qtum mainnet|Production image|Old Qtum builds|Throwaway IPFS node|Free disk space|Set up job|Run actions\/|Post Run actions\/|Complete job)/;
 
 // The rules, as a pure function (tested in test/pipeline.test.mjs).
 //   checks: 'success' | 'failure' | 'error' | 'pending' | 'missing'
 //   mandatory: set when a release the PR covers is a hard fork (or URGENT)
 //   major: the PR moves to a new major Qtum version
 //   rerun: a re-run of checks that failed on an outside cause was just started
-export function decide({ checks, mandatory, major = false, releasedAt, now, upToDate, conflict, errors = [], unexpectedFiles = [], ownerFiles = [], rerun = null, waitHours = 72, headAt = null, silentHours = 6 }) {
+//   held: the hold reason on the default branch or the PR head (never merged, no email)
+export function decide({ checks, mandatory, major = false, releasedAt, now, upToDate, conflict, errors = [], unexpectedFiles = [], ownerFiles = [], rerun = null, waitHours = 72, headAt = null, silentHours = 6, held = null }) {
+  if (held) return { action: 'wait', cause: 'held', why: `the package is held (${held}); nothing is merged while the "hold" file exists` };
   if (errors.length) return { action: 'block', cause: 'unclear', why: `could not read everything needed: ${errors.join('; ')}` };
   if (unexpectedFiles.length) return { action: 'block', cause: 'unexpected-files', why: `bot commits change files a bump never touches: ${unexpectedFiles.join(', ')}` };
   if (ownerFiles.length) return { action: 'block', cause: 'owner-merge', why: `a person changed files the gate never merges by itself (${ownerFiles.slice(0, 5).join(', ')}${ownerFiles.length > 5 ? ', ...' : ''}); the owner reviews and merges this PR` };
@@ -93,6 +97,18 @@ export function decide({ checks, mandatory, major = false, releasedAt, now, upTo
 // Which files make the PR the owner's to merge (people's commits only).
 export function ownerMergeFiles(files, botOnly) {
   return botOnly ? [] : files.filter((f) => OWNER_MERGE_FILES.test(f));
+}
+
+// The Qtum pin (VERSION and QTUM_SHA256 in docker-compose.yml) is the bump
+// bot's alone: which of the two differ between the compose file the bot wrote
+// and the PR head's. A person may fix the build on the bot's branch, but a
+// changed sha256 means Qtum's file changed after the bump (or a typo), which
+// the owner must look into; the gate never merges that by itself.
+export function pinChanges(botCompose, headCompose) {
+  const read = (text, fn) => { try { return fn(text); } catch { return null; } };
+  return [['VERSION', readQtumVersion], ['QTUM_SHA256', readQtumSha256]]
+    .filter(([, fn]) => read(botCompose, fn) !== read(headCompose, fn))
+    .map(([key]) => key);
 }
 
 // Did every failed job of a checks run fail only on outside steps? (A job lost
@@ -128,6 +144,10 @@ async function checksState(gh, repo, sha) {
   let state = latest.state;
   // A run that is running again (a re-run) counts as running, whatever it said before.
   if (run.status !== 'completed') state = 'pending';
+  // A held package is not built: that "success" tested nothing.
+  if (state === 'success' && /^All checks passed \(held/.test(latest.description || '')) {
+    return { state: 'missing', note: 'the checks did not build it: the package was held', url: latest.target_url, runId, run };
+  }
   return { state, url: latest.target_url, description: latest.description, runId, run };
 }
 
@@ -203,26 +223,59 @@ async function watcherMandatory(name, from, to) {
 }
 
 // Every version on the default branch gets a release run: if the package is
-// not held and its version has no "Release ..." commit and no release run ran
-// on the current head, start one (a gate merge made with GITHUB_TOKEN starts no
-// push workflow, and the dispatch after it may have failed).
-async function reconcileReleases(gh, repo, base, root, say) {
+// not held and its version is not released, and no release run on the current
+// head is running or ended in success or failure, start one (a gate merge made
+// with GITHUB_TOKEN starts no push workflow, the dispatch after it may have
+// failed, and a cancelled or timed-out run published nothing and told nobody).
+// After two such lost runs the owner gets an issue instead of a third try.
+async function reconcileReleases(gh, repo, base, root, owner, say) {
   const ref = `origin/${base}`;
+  const key = 'release-not-run';
+  const done = async (why) => {
+    const issue = await findIssue(gh, repo, key);
+    if (issue?.state === 'open') await closeIssue(gh, repo, issue, why);
+  };
   if (holdReason(root, ref)) return;
-  const head = git(root, ['rev-parse', ref]);
   const m = JSON.parse(git(root, ['show', `${ref}:${MANIFEST}`]));
-  let record = {};
-  try { record = JSON.parse(git(root, ['show', `${ref}:${RELEASES}`])); } catch { /* none yet */ }
-  if (record[m.version]?.hash || releasedVersions(root, m.name, ref).includes(m.version)) return;
+  if (isReleased(root, ref)) { await done(`Released: ${m.name} ${m.version} has its "Release" commit.`); return; }
+  const head = git(root, ['rev-parse', ref]);
   const missing = `${m.name} ${m.version}`;
   const runs = await gh.get(`repos/${repo}/actions/workflows/release.yml/runs?per_page=30`);
-  const onHead = (runs?.workflow_runs || []).find((r) => r.head_sha === head);
-  if (onHead) {
-    say(`- not released yet on ${base}: ${missing}; release run ${onHead.html_url} (${onHead.status}${onHead.conclusion ? `, ${onHead.conclusion}` : ''}) covers it${onHead.conclusion === 'failure' ? ' (its failure issue says what to do)' : ''}`);
+  const { live, lost } = releaseRunsOnHead(runs?.workflow_runs, head);
+  if (live) {
+    say(`- not released yet on ${base}: ${missing}; release run ${live.html_url} (${live.status}${live.conclusion ? `, ${live.conclusion}` : ''}) covers it${live.conclusion === 'failure' ? ' (its failure issue says what to do)' : ''}`);
+    if (live.conclusion !== 'failure') await done(`A release run covers it again: ${live.html_url}`);
+    return;
+  }
+  if (lost.length >= 2) {
+    const server = env('GITHUB_SERVER_URL', 'https://github.com');
+    await upsertIssue(gh, repo, {
+      key,
+      title: `[pipeline broken] ${missing} is not released: its release runs were cancelled`,
+      assignee: owner,
+      state: `lost@${head.slice(0, 7)}`,
+      body: `**What happened:** the default branch has ${missing}, which is not published yet, and its last release runs on ${head.slice(0, 7)} ended without a result (${lost.slice(0, 3).map((r) => `[${r.conclusion}](${r.html_url})`).join(', ')}): cancelled by hand, replaced by a newer run, or stopped after 30 minutes. The gate stopped starting new ones.
+
+**What it means:** the version is not on the staging store. Boxes are not affected: production only changes when you publish it in editstore.
+
+**What to do:** open the last run above and read where it stopped. Then Actions → **Release** → Run workflow. This issue closes by itself when the version is released or a release run ends with a result.
+
+<details open><summary>Prompt for Claude Code</summary>
+
+\`\`\`text
+In ${repo}, the "Release" workflow runs for ${missing} on ${head.slice(0, 7)} keep ending as cancelled or timed out: ${lost.slice(0, 3).map((r) => r.html_url).join(' ')}
+Read their logs (gh run view <id> -R ${repo} --log) and tell me in plain words where they stopped and why (AVADO's IPFS node, the store, GitHub). Do not publish anything; tell me whether running Release by hand is enough.
+\`\`\`
+</details>
+
+Gate: ${server}/${repo}/actions/runs/${env('GITHUB_RUN_ID', '0')}`,
+      changeNote: `The release runs of ${missing} keep ending without a result.`,
+    });
+    say(`- not released yet on ${base}: ${missing}; ${lost.length} release runs on ${head.slice(0, 7)} ended without a result: the owner has an issue`);
     return;
   }
   await retry('starting release.yml', () => gh.post(`repos/${repo}/actions/workflows/release.yml/dispatches`, { ref: base }));
-  say(`- not released yet on ${base}: ${missing}, and no release run ran on ${head.slice(0, 7)}: started release.yml`);
+  say(`- not released yet on ${base}: ${missing}, and no release run on ${head.slice(0, 7)} ${lost.length ? `has a result (${lost[0].conclusion}: ${lost[0].html_url})` : 'ran'}: started release.yml`);
 }
 
 // --- the issue text ------------------------------------------------------------------
@@ -234,7 +287,7 @@ function issueText({ repo, pr, target, mainQtum, decision, checks, failed, runUr
   const headline = {
     'checks-failed': `our checks failed for Qtum ${target}`,
     major: `new MAJOR version ${mainQtum} → ${target}: please review and merge`,
-    'owner-merge': `a person changed the checks or the pipeline on the Qtum ${target} PR: please review and merge`,
+    'owner-merge': `a person changed the checks, the pipeline or the Qtum pin on the Qtum ${target} PR: please review and merge`,
     conflict: `the Qtum ${target} PR conflicts with the default branch`,
     'unexpected-files': 'the bump PR changes unexpected files',
     unclear: `the gate could not decide on Qtum ${target}`,
@@ -251,6 +304,7 @@ function issueText({ repo, pr, target, mainQtum, decision, checks, failed, runUr
 
   const rules = `Rules:
 - Never change the package name, the volume (data:/package/data), the ports (3888, 3889) or the environment variable EXTRA_OPTS in dappnode_package.json, and keep the version the bot set there.
+- Never change VERSION or QTUM_SHA256 in docker-compose.yml. If the Qtum tarball check fails (the pinned sha256 differs from what the release publishes), Qtum's file changed after it was pinned: stop and tell me, do not re-pin it.
 - Keep qtumd's command line (build/files/supervisord.conf) and qtum.conf (build/files/qtum.conf) the same except for what Qtum ${target} requires (compare with \`docker run --rm --entrypoint qtumd <image> -help -help-debug\`).
 - Never weaken the wallet safety in build/monitor: a wallet is never deleted or replaced by an empty one, every private key must stay exportable.
 - Do not edit .github/**, scripts/**, test/** (the checks), hold or releases.json. If the fix really needs that, make the change in a separate commit, say so clearly, and tell me that I must review and merge the PR myself: the gate never merges such a PR by itself.
@@ -269,6 +323,7 @@ function issueText({ repo, pr, target, mainQtum, decision, checks, failed, runUr
 ${failed.jobs.map((j) => `- ${j.name}${j.step ? `, step "${j.step}"` : ''}: ${j.url}`).join('\n') || `- see ${checks.url}`}
 Download the logs with: gh run download ${failed.runId || '<run id>'} -R ${repo}
 First decide whether the cause is outside our package: too few peers or no header progress on Qtum mainnet from a GitHub runner, AVADO's IPFS node or the production store (bo.ava.do), GitHub's release downloads, or the runner itself. If so, do not change any files: run \`gh run rerun ${failed.runId || '<run id>'} -R ${repo} --failed\` and tell me.
+If the failing step is "Qtum release tarball": do not change anything; tell me what the check says (the release may have been changed after the bump).
 Otherwise find why the check fails with Qtum ${target} (read the release notes: ${notes}, and the Bitcoin Core release notes they link). Typical causes: a removed or renamed RPC the wizard or the monitor calls (test/smoke-test.sh), a qtumd option or qtum.conf key that no longer exists (scripts/ci/check-flags.sh), a wallet change that breaks the legacy-wallet upgrade or the key export (scripts/ci/legacy-wallet-test.sh). Fix it on this branch.
 ${rules}`;
   } else if (decision.cause === 'major') {
@@ -285,7 +340,7 @@ Our checks still run on the PR (${checks.state}${checks.url ? `, [run](${checks.
 5. Tell me in plain words what changes for owners of an AVADO box (wallet, staking, the wizard) and whether I can merge. Do not merge the PR yourself.
 ${rules}`;
   } else if (decision.cause === 'owner-merge') {
-    what = `Someone pushed commits to the bot's PR that change files the gate never merges by itself: the checks or their test scripts, the pipeline, the hold or the release record. Such a change can weaken the checks for every later release, so a person must read it. Nothing was merged or released; boxes are not affected.
+    what = `Someone pushed commits to the bot's PR that change what the gate never merges by itself: the checks or their test scripts, the pipeline, the hold, the release record, or the Qtum tarball the bot pinned (VERSION, QTUM_SHA256). Such a change can weaken the checks for every later release, or build a Qtum file that changed after its release, so a person must read it. Nothing was merged or released; boxes are not affected.
 
 **What to do:** open ${prUrl}, read the changes to those files, and if they are right, merge it yourself with **"Create a merge commit"** (the release then publishes it to staging as usual). If not, remove those commits from the branch.`;
     prompt = `In ${repo}, pull request #${pr.number} (branch ${BOT_BRANCH}, Qtum ${mainQtum} → ${target}) has commits by people that change: ${decision.why}.
@@ -346,8 +401,9 @@ async function main() {
   const meta = await gh.get(`repos/${repo}`);
   const base = meta.default_branch;
   fetchBranch(root, token, base);
-  await reconcileReleases(gh, repo, base, root, say);
+  await reconcileReleases(gh, repo, base, root, owner, say);
   const onBase = readPackage(root, `origin/${base}`);
+  const heldBase = holdReason(root, `origin/${base}`);
 
   const prs = await gh.get(`repos/${repo}/pulls?state=open&head=${repo.split('/')[0]}:${encodeURIComponent(BOT_BRANCH)}`);
   const pr = (prs || [])[0];
@@ -364,7 +420,11 @@ async function main() {
     console.log(`::warning::production store unreadable (${err.message})`);
   }
   const qtum = await readQtumHeight(gh.http);
-  if (rels) await syncForkIssues({ gh, repo, owner, releases: stable, prodQtum, mainQtum: onBase.qtum, qtum, pr, mode, say });
+  if (rels) {
+    await syncForkIssues({
+      gh, repo, owner, releases: stable, prodQtum, mainQtum: onBase.qtum, qtum, pr, mode, held: heldBase, mainReleased: isReleased(root, `origin/${base}`), say,
+    });
+  }
 
   // Issues of PRs that are gone close themselves.
   for (const i of await listOpenIssues(gh, repo)) {
@@ -382,8 +442,12 @@ async function main() {
   const full = await gh.get(`repos/${repo}/pulls/${pr.number}`);
   const sha = full.head.sha;
 
-  const target = readQtumVersion(await gh.file(repo, COMPOSE, sha));
+  const headCompose = await gh.file(repo, COMPOSE, sha);
+  const target = readQtumVersion(headCompose);
   const mainQtum = onBase.qtum;
+  // A hold on the default branch or on the PR head: nothing is merged.
+  const headHold = await gh.file(repo, HOLD_FILE, sha);
+  const held = heldBase || (headHold !== null ? holdText(headHold) : null);
   const checks = await checksState(gh, repo, sha);
   const cmp = await gh.get(`repos/${repo}/compare/${encodeURIComponent(base)}...${sha}`);
   const upToDate = cmp.behind_by === 0;
@@ -397,6 +461,14 @@ async function main() {
   const files = ((await gh.paginate(`repos/${repo}/pulls/${pr.number}/files`, { maxPages: 30 })) || []).map((f) => f.filename);
   const unexpectedFiles = botOnly ? files.filter((f) => !ALLOWED_BOT_FILES.has(f)) : [];
   const ownerFiles = ownerMergeFiles(files, botOnly);
+  // The Qtum pin must be the one the bot wrote (its last "Bump Qtum to" commit;
+  // without one, the default branch's: then any change of it is a person's).
+  if (!botOnly) {
+    const lastBump = [...(commits || [])].reverse().find((c) => c.commit?.author?.email === BOT_EMAIL && /^Bump Qtum to /.test(c.commit?.message || ''));
+    const botCompose = lastBump ? await gh.file(repo, COMPOSE, lastBump.sha) : git(root, ['show', `origin/${base}:${COMPOSE}`]);
+    const changed = pinChanges(botCompose, headCompose);
+    if (changed.length) ownerFiles.push(`${COMPOSE} (${changed.join(' and ')} changed by a person)`);
+  }
 
   // Upstream: the release of the target, and the hard forks among everything
   // between the default branch and it.
@@ -439,6 +511,7 @@ async function main() {
     rerun,
     waitHours,
     headAt,
+    held,
   });
 
   say(`PR #${pr.number} (${sha.slice(0, 7)}): Qtum ${mainQtum} -> ${target}${major ? ' (MAJOR)' : ''}`);
@@ -447,12 +520,14 @@ async function main() {
   say(`- hard fork: ${mandatory ? mandatory.source : 'no'} (release watcher: ${watcher.read})`);
   say(`- branch contains ${base}: ${upToDate ? 'yes' : 'no'}${conflict ? ' (conflict)' : ''}`);
   if (ownerFiles.length) say(`- changed by people, owner merges: ${ownerFiles.join(', ')}`);
+  if (held) say(`- HELD: ${held}`);
   say(`- DECISION: ${decision.action.toUpperCase()}: ${decision.why}${!merging && decision.action === 'merge' ? ' (shadow mode: not merging)' : ''}`);
 
   // Status on the PR head and one comment that is edited in place (no email).
   const statusState = { merge: 'success', wait: 'pending', block: 'failure' }[decision.action];
   const statusText = !merging && decision.action === 'merge' ? `shadow mode, would merge: ${decision.why}` : decision.why;
-  await gh.post(`repos/${repo}/statuses/${sha}`, { state: statusState, context: GATE_CONTEXT, description: statusText.slice(0, 139), target_url: runUrl });
+  // (setting a status and editing a comment are safe to repeat: retried)
+  await retry('setting avado/gate', () => gh.post(`repos/${repo}/statuses/${sha}`, { state: statusState, context: GATE_CONTEXT, description: statusText.slice(0, 139), target_url: runUrl }));
   const table = `${GATE_COMMENT}
 ### Gate: ${decision.action === 'merge' ? (!merging ? 'would merge (shadow mode)' : 'merging') : decision.action === 'wait' ? 'waiting' : 'stopped'}
 ${decision.why}.
@@ -466,12 +541,13 @@ ${decision.why}.
 | Hard fork | ${mandatory ? mandatory.source : 'no'} |
 | Release watcher | ${watcher.read} |
 | Up to date with ${base} | ${upToDate ? 'yes' : 'no'} |
+| Held | ${held ? `yes: ${held}` : 'no'} |
 | Mode | ${merging ? 'on (merges)' : 'shadow (never merges; set PIPELINE_MODE=on)'} |
 
 Checked ${fmtUtc(now)} by ${runUrl}`;
   const comments = await gh.get(`repos/${repo}/issues/${pr.number}/comments?per_page=100`);
   const mine = (comments || []).find((c) => (c.body || '').startsWith(GATE_COMMENT));
-  if (mine) await gh.patch(`repos/${repo}/issues/comments/${mine.id}`, { body: table });
+  if (mine) await retry('updating the gate comment', () => gh.patch(`repos/${repo}/issues/comments/${mine.id}`, { body: table }));
   else await gh.post(`repos/${repo}/issues/${pr.number}/comments`, { body: table });
 
   const key = `pr-${pr.number}`;

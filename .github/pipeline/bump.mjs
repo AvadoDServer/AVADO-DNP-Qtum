@@ -32,12 +32,12 @@ import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeClient } from './lib/gh.js';
 import { upsertIssue, findIssue, closeIssue } from './lib/issue.js';
-import { tarballSha256, syncForkIssues, readQtumHeight, forkWhen } from './lib/qtum.js';
+import { tarballSha256, publishedSha256, assertPinUnchanged, syncForkIssues, readQtumHeight, forkWhen } from './lib/qtum.js';
 import {
   BOT_NAME, BOT_EMAIL, BOT_BRANCH, UPSTREAM_REPO, MANIFEST, COMPOSE, bumpMarker, markerTarget, compareVersions, maxVersion, bumpPatch,
-  stableReleases, isMajorBump, readQtumVersion, setQtumVersion, setQtumSha256, setImageVersion, setManifestField, readPackage,
-  holdReason, git, fetchBranch, pushHead, remoteSha, releasedVersions, readProductionVersions, assetName, env, fmtUtc, hoursBetween,
-  notice, warning, recordFailure,
+  stableReleases, isMajorBump, readQtumVersion, readQtumSha256, setQtumVersion, setQtumSha256, setImageVersion, setManifestField, readPackage,
+  holdReason, isReleased, git, fetchBranch, pushHead, isWorkflowPushRefusal, remoteSha, releasedVersions, readProductionVersions, assetName,
+  env, fmtUtc, hoursBetween, notice, warning, recordFailure,
 } from './lib/common.js';
 
 const root = process.cwd();
@@ -97,7 +97,7 @@ async function reportPat(gh, ok) {
       state: 'rejected',
       body: `GitHub rejected the repository secret \`PAT_TOKEN\` (a personal access token; they expire). The bump bot still works: it pushes with the built-in token and starts the PR checks itself, so the PR shows an extra "PR checks" run marked "action required" that can be ignored.
 
-**To fix it:** create a fine-grained token at github.com/settings/personal-access-tokens: resource owner AvadoDServer, only this repository (${repo}), permissions Contents: read and write and Pull requests: read and write, with an expiry date. Then Settings -> Secrets and variables -> Actions -> \`PAT_TOKEN\` -> Update. This issue closes by itself on the next bump run after that.`,
+**To fix it:** create a fine-grained token at github.com/settings/personal-access-tokens: resource owner AvadoDServer, only this repository (${repo}), permissions Contents, Pull requests and Workflows: read and write, with an expiry date. Then Settings -> Secrets and variables -> Actions -> \`PAT_TOKEN\` -> Update. This issue closes by itself on the next bump run after that.`,
     });
   } catch (err) {
     warning(`could not report the PAT_TOKEN state (${err.message})`);
@@ -128,7 +128,7 @@ Tarball \`${assetName(target)}\`: sha256 \`${sha}\`${row.shaSources ? ` (${row.s
 2. **Gate** (\`avado/gate\`, every 4 hours and after the checks): merges this PR when the checks are green **and** 72 hours have passed since the Qtum release (at once for a hard fork). ${major ? '**Not for this PR: it is a new major version.** ' : ''}If a check fails or anything is unclear, it does **not** merge and opens an issue assigned to the owner with a ready-to-paste Claude Code prompt.
 3. **Release**: after the merge the version is published to the **staging** store, from exactly the build the checks tested. Production stays a manual click in editstore.
 
-Pushing a fix to \`${BOT_BRANCH}\` is fine: the bot keeps your commits (a fix that touches \`.github/\`, \`scripts/\`, \`test/\`, \`hold\` or \`releases.json\` is left for the owner to merge). **Closing this PR without merging skips Qtum ${target}**: the bot waits for a newer Qtum release (reopen the PR to undo). To pause the bot, set the repository variable \`PIPELINE_MODE\` to \`off\` (see README).
+Pushing a fix to \`${BOT_BRANCH}\` is fine: the bot keeps your commits (a fix that touches \`.github/\`, \`scripts/\`, \`test/\`, \`hold\` or \`releases.json\`, or changes \`VERSION\` or \`QTUM_SHA256\`, is left for the owner to merge). **Closing this PR without merging skips Qtum ${target}**: the bot waits for a newer Qtum release (reopen the PR to undo). To pause the bot, set the repository variable \`PIPELINE_MODE\` to \`off\` (see README).
 `;
 }
 
@@ -164,9 +164,13 @@ async function main() {
   const openPrs = await gh.get(`repos/${repo}/pulls?state=open&head=${repoOwner}:${encodeURIComponent(BOT_BRANCH)}`);
   let pr = (openPrs || [])[0] || null;
 
-  // The owner hears about a hard fork at once, before anything else can fail.
+  // The owner hears about a hard fork at once, before anything else can fail
+  // (also while the package is held: the issue then says so).
+  const hold = holdReason(root, `origin/${base}`);
   const qtum = await readQtumHeight(gh.http);
-  const forksAll = await syncForkIssues({ gh, repo, owner, releases: upstreamList, prodQtum, mainQtum, qtum, pr, mode, dryRun, say });
+  const forksAll = await syncForkIssues({
+    gh, repo, owner, releases: upstreamList, prodQtum, mainQtum, qtum, pr, mode, held: hold, mainReleased: isReleased(root, `origin/${base}`), dryRun, say,
+  });
 
   let target;
   let release = null;
@@ -182,12 +186,14 @@ async function main() {
   say(`Qtum on ${base}: ${mainQtum} (package ${onBase.name} ${onBase.version}). Production: ${prodManifest ? `${prodManifest.version} (Qtum ${prodQtum})` : 'unreadable'}. Newest stable Qtum: ${target}${pretend ? ' (pretend)' : ''}.`);
 
   let prQtum = null;
+  let prSha = null;
   if (pr) {
     fetchBranch(root, token, BOT_BRANCH);
-    prQtum = readQtumVersion(git(root, ['show', `origin/${BOT_BRANCH}:${COMPOSE}`]));
+    const prCompose = git(root, ['show', `origin/${BOT_BRANCH}:${COMPOSE}`]);
+    prQtum = readQtumVersion(prCompose);
+    try { prSha = readQtumSha256(prCompose); } catch { /* a person broke the line: the checks say so */ }
   }
 
-  const hold = holdReason(root, `origin/${base}`);
   if (hold) {
     say(`${onBase.name} is HELD on ${base} (${hold}): nothing is bumped. Remove the "hold" file in a PR you merge yourself to end the hold.`);
     return;
@@ -217,13 +223,36 @@ async function main() {
     }
   }
 
+  // --- the new package version -------------------------------------------------------
+  const released = releasedVersions(root, onBase.name, `origin/${base}`);
+  const prodVersion = prod?.versions.get(onBase.name) || null;
+  const highest = maxVersion([onBase.version, ...released, prodVersion].filter(Boolean));
+  const row = { name: onBase.name, from: onBase.version, to: bumpPatch(highest), prodVersion, shaSources: null };
+
+  // --- the open PR as it is --------------------------------------------------------------
+  let humanCommits = [];
+  let upToDate = false;
+  if (pr) {
+    const commits = await gh.get(`repos/${repo}/pulls/${pr.number}/commits?per_page=100`);
+    humanCommits = (commits || []).filter((c) => !isBotCommit(c));
+    upToDate = (() => { try { git(root, ['merge-base', '--is-ancestor', `origin/${base}`, `origin/${BOT_BRANCH}`]); return true; } catch { return false; } })();
+    const prVersion = JSON.parse(git(root, ['show', `origin/${BOT_BRANCH}:${MANIFEST}`])).version;
+    if (prQtum === target && upToDate && compareVersions(prVersion, row.to) >= 0) {
+      // Nothing to push, and no need to download the tarball again: its pin is
+      // compared with the hashes the release publishes now.
+      if (release && prSha && prSha !== ZERO_SHA) assertPinUnchanged({ release, pinned: prSha, where: `PR #${pr.number}` });
+      if (release && publishedSha256(release).missing) warning(`${assetName(target)} is no longer attached to Qtum ${target}'s release; PR #${pr.number} keeps its pin (a rebuild would fail)`);
+      say(`PR #${pr.number} already offers Qtum ${target} on top of the current ${base}; nothing to push.`);
+      return;
+    }
+  }
+
   // The Linux tarball must exist before anything is built from it; its sha256 is pinned.
   let sha;
-  let shaSources = null;
   const t = release ? await tarballSha256(release) : { missing: true, name: assetName(target) };
   if (!t.missing) {
     sha = t.sha256;
-    shaSources = t.sources;
+    row.shaSources = t.sources;
   } else if (pretend) {
     sha = ZERO_SHA;
     notice(`TEST: ${assetName(target)} does not exist; the PR pins a sha256 of zeros, so the checks fail (that exercises the issue path)`);
@@ -235,12 +264,11 @@ async function main() {
     say(`Waiting: Qtum ${target} is released on GitHub but ${t.name} is not attached yet. The next run tries again (the owner is told after ${ASSET_WAIT_HOURS} h).`);
     return;
   }
-
-  // --- the new package version -------------------------------------------------------
-  const released = releasedVersions(root, onBase.name, `origin/${base}`);
-  const prodVersion = prod?.versions.get(onBase.name) || null;
-  const highest = maxVersion([onBase.version, ...released, prodVersion].filter(Boolean));
-  const row = { name: onBase.name, from: onBase.version, to: bumpPatch(highest), prodVersion, shaSources };
+  // A file Qtum replaced after the bump pinned it is never re-pinned.
+  if (pr && prQtum === target && prSha && prSha !== ZERO_SHA && release && !t.missing) {
+    assertPinUnchanged({ release, pinned: prSha, where: `PR #${pr.number}`, now: t });
+  }
+  const shaSources = row.shaSources;
 
   // Releases this PR covers, and the hard forks among them.
   const covered = upstreamList.filter((r) => compareVersions(r.tag_name, mainQtum) > 0 && compareVersions(r.tag_name, target) <= 0);
@@ -249,19 +277,6 @@ async function main() {
   const major = isMajorBump(mainQtum, target);
 
   // --- the commit -----------------------------------------------------------------------
-  let humanCommits = [];
-  let upToDate = false;
-  if (pr) {
-    const commits = await gh.get(`repos/${repo}/pulls/${pr.number}/commits?per_page=100`);
-    humanCommits = (commits || []).filter((c) => !isBotCommit(c));
-    upToDate = (() => { try { git(root, ['merge-base', '--is-ancestor', `origin/${base}`, `origin/${BOT_BRANCH}`]); return true; } catch { return false; } })();
-    const prVersion = JSON.parse(git(root, ['show', `origin/${BOT_BRANCH}:${MANIFEST}`])).version;
-    if (prQtum === target && upToDate && compareVersions(prVersion, row.to) >= 0) {
-      say(`PR #${pr.number} already offers Qtum ${target} on top of the current ${base}; nothing to push.`);
-      return;
-    }
-  }
-
   const edit = () => {
     const composePath = join(root, COMPOSE);
     const manifestPath = join(root, MANIFEST);
@@ -336,14 +351,47 @@ async function main() {
     }
   }
 
+  // GitHub lets a token bring a change of .github/workflows/ into an existing
+  // branch only with the "Workflows" permission (GITHUB_TOKEN never has it). So
+  // when the default branch changed a workflow file since the bot's branch was
+  // made, refreshing that branch can be refused. A PR with only bot commits is
+  // then replaced by a new PR on a fresh branch (a new branch made from the
+  // default branch is accepted); a PR with people's commits is left to them.
+  const refused = (err) => isWorkflowPushRefusal(err.gitOutput || err.message);
+  const push = async (opts) => {
+    try {
+      pushHead(root, writeToken(), BOT_BRANCH, opts);
+      return;
+    } catch (err) {
+      if (refused(err) || !patOk) throw err;
+      warning(`push with PAT_TOKEN failed (${String(err.message).split('\n')[0]}); trying the built-in token`);
+      patOk = false;
+      await reportPat(gh, false);
+    }
+    pushHead(root, token, BOT_BRANCH, opts);
+  };
   try {
-    pushHead(root, writeToken(), BOT_BRANCH, { lease });
+    await push({ lease });
   } catch (err) {
-    if (!patOk) throw new Error(`could not push ${BOT_BRANCH} (${String(err.message).split('\n')[0]}); if the branch changed during this run, the next run tries again`);
-    warning(`push with PAT_TOKEN failed (${String(err.message).split('\n')[0]}); trying the built-in token`);
-    patOk = false;
-    await reportPat(gh, false);
-    pushHead(root, token, BOT_BRANCH, { lease });
+    if (!refused(err)) throw new Error(`could not push ${BOT_BRANCH} (${String(err.message).split('\n')[0]}); if the branch changed during this run, the next run tries again`);
+    if (pr && humanCommits.length) {
+      throw new Error(`could not bring ${base} into PR #${pr.number}: ${base} changed a file in .github/workflows/ since ${BOT_BRANCH} was made, and GitHub lets only a token with the "Workflows" permission bring such a change into a branch. The PR has commits by people, so the bot does not replace it. To fix it: merge ${base} into ${BOT_BRANCH} yourself (gh pr checkout ${pr.number} -R ${repo}; git merge origin/${base}; git push), or give PAT_TOKEN the permission "Workflows: Read and write" (README, "Secrets").`);
+    }
+    const ghw0 = makeClient({ token: writeToken() });
+    if (pr) {
+      // The marker loses its target, so closing this PR does not skip the release.
+      const note = `**Replaced by a new pull request:** \`${base}\` changed a workflow file, which the bump bot's token may not bring into an existing branch, so it made \`${BOT_BRANCH}\` again from \`${base}\`. Closing this PR does not skip Qtum ${target}.`;
+      await ghw0.patch(`repos/${repo}/pulls/${pr.number}`, { body: `${bumpMarker(null)}\n${note}\n\n${String(pr.body || '').replace(/<!-- avado-bot:bump[^>]*-->\n?/g, '')}`, state: 'closed' });
+      say(`Closed PR #${pr.number}: ${base} changed a workflow file, so ${BOT_BRANCH} is made again from ${base} under a new PR.`);
+    }
+    try { await ghw0.del(`repos/${repo}/git/refs/heads/${BOT_BRANCH}`); } catch (e) { if (e.status !== 404 && e.status !== 422) throw e; }
+    try {
+      await push({ lease: '' });
+    } catch (e) {
+      if (!refused(e)) throw e;
+      throw new Error(`GitHub refused even a new ${BOT_BRANCH} made from ${base} (${String(e.message).split('\n')[0]}). Give PAT_TOKEN the permission "Workflows: Read and write" (README, "Secrets"); the next run then opens the PR.`);
+    }
+    pr = null;
   }
 
   const ghw = makeClient({ token: writeToken() });

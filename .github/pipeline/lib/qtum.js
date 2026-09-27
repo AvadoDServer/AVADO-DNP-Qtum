@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { checkMandatory, parseHumanDate } from './mandatory.js';
 import { upsertIssue, closeIssue, listOpenIssues } from './issue.js';
-import { compareVersions, isMajorBump, assetName, fmtUtc, hoursBetween, BOT_BRANCH, UPSTREAM_REPO } from './common.js';
+import { compareVersions, isMajorBump, assetName, fmtUtc, hoursBetween, retry, BOT_BRANCH, UPSTREAM_REPO } from './common.js';
 
 export const QTUM_API = 'https://qtum.info/api';
 // Nominal Qtum block time since the v0.20.2 hard fork (32-second blocks).
@@ -99,7 +99,8 @@ export function bodyHashes(body) {
 // uploaded since mid 2025), or null.
 export const assetDigest = (asset) => /^sha256:([0-9a-f]{64})$/.exec(asset?.digest || '')?.[1] || null;
 
-export async function sha256OfUrl(url, { timeoutMs = 15 * 60 * 1000, fetchImpl = globalThis.fetch } = {}) {
+// About 100 MB from GitHub: seconds normally; three tries fit the bump's 30 minutes.
+export async function sha256OfUrl(url, { timeoutMs = 6 * 60 * 1000, fetchImpl = globalThis.fetch } = {}) {
   const res = await fetchImpl(url, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status} for ${url}`), { status: res.status });
   const h = createHash('sha256');
@@ -114,11 +115,12 @@ export async function sha256OfUrl(url, { timeoutMs = 15 * 60 * 1000, fetchImpl =
 // that does not match what Qtum published is never pinned.
 // Returns { sha256, asset, sources } or { missing: true } when the release has
 // no such asset (yet).
-export async function tarballSha256(release, { hash = sha256OfUrl } = {}) {
+export async function tarballSha256(release, { hash = sha256OfUrl, retryDelayMs = 10000 } = {}) {
   const name = assetName(release.tag_name);
   const asset = (release.assets || []).find((a) => a.name === name);
   if (!asset) return { missing: true, name };
-  const got = await hash(asset.browser_download_url);
+  // A download that breaks off is tried again (a 404 is not).
+  const got = await retry(`downloading ${name}`, () => hash(asset.browser_download_url), { delayMs: retryDelayMs });
   if (asset.size && got.bytes && got.bytes !== asset.size) throw new Error(`${name}: downloaded ${got.bytes} bytes, GitHub lists ${asset.size}`);
   const sources = ['downloaded and hashed'];
   const digest = assetDigest(asset);
@@ -132,6 +134,28 @@ export async function tarballSha256(release, { hash = sha256OfUrl } = {}) {
     sources.push('the release notes');
   }
   return { sha256: got.sha256, asset, sources };
+}
+
+// The hashes the release publishes for its Linux tarball, without downloading
+// it: { name, missing, digest, listed } (digest: GitHub's, listed: the notes').
+export function publishedSha256(release) {
+  const name = assetName(release.tag_name);
+  const asset = (release.assets || []).find((a) => a.name === name);
+  return { name, missing: !asset, digest: asset ? assetDigest(asset) : null, listed: bodyHashes(release.body).get(name) || null };
+}
+
+// Qtum's tarball must never change after the bump pinned it. Throws when the
+// release now publishes (or serves) another sha256 than `pinned`.
+//   now: { sha256, sources } of a fresh download, or null to compare only the
+//   hashes the release publishes (no download).
+export function assertPinUnchanged({ release, pinned, where, now = null }) {
+  const p = publishedSha256(release);
+  const seen = now
+    ? [[now.sha256, 'the file GitHub serves now (downloaded and hashed)']]
+    : [[p.digest, "GitHub's asset digest"], [p.listed, 'the release notes']].filter(([s]) => s);
+  const differ = seen.filter(([s]) => s !== pinned);
+  if (!differ.length) return;
+  throw new Error(`Qtum ${release.tag_name}'s Linux tarball ${p.name} CHANGED after it was pinned: ${where} pins sha256 ${pinned}, but now it is ${differ.map(([s, src]) => `${s} according to ${src}`).join(' and ')}. That only happens when someone replaced the file on GitHub after the release. The bump bot stops here and never re-pins a changed file. Find out from Qtum why the file changed (https://github.com/${UPSTREAM_REPO}/releases/tag/${release.tag_name}); if the new file is genuine, change QTUM_SHA256 on ${BOT_BRANCH} yourself and merge that PR yourself (the gate leaves a changed pin to you).`);
 }
 
 // --- the owner's hard-fork issue ------------------------------------------------------
@@ -157,8 +181,35 @@ export function forkState(f, { qtum, now = new Date() } = {}) {
   return 'announced';
 }
 
-function forkIssueText({ repo, f, release, state, prodQtum, mainQtum, pr, mode, qtum, majorFrom }) {
+// What stands between the fork release and production, and what the owner does.
+//   held          the hold reason on the default branch, or null
+//   mainReleased  the default branch's version is published (staging)
+export function forkProgress({ repo, f, mainQtum, pr, held = null, mainReleased = false }) {
   const server = process.env.GITHUB_SERVER_URL || 'https://github.com';
+  const when = forkWhen(f);
+  const publish = `**Publish it to production in editstore before ${when.replace(/^about /, '')}**, with a margin: boxes need time to auto-update and to restart Qtum.`;
+  const merged = Boolean(mainQtum) && compareVersions(mainQtum, f.tag) >= 0;
+  if (held) {
+    return {
+      prText: `the package is **HELD** (${held}): ${merged ? `the default branch has Qtum ${mainQtum}, but a held package is not published to staging` : 'the robot does not bump it, so no bump PR will come'}`,
+      steps: [`End the hold: remove the \`hold\` file in a pull request you merge yourself${merged ? '' : ' (or update Qtum by hand, README "Update Qtum by hand")'}. The robot never bumps or publishes a held package, not even for a hard fork.`, 'Check the new version on staging (the test box).', publish],
+      pipelineText: 'nothing while the package is held: no bump, no merge, no release (this issue is still kept up to date).',
+    };
+  }
+  if (merged) {
+    return {
+      prText: `merged: the default branch has Qtum ${mainQtum}${mainReleased ? ' and it is on the **staging** store' : ', but it is not on staging yet (Actions → Release; a failed release has its own issue)'}`,
+      steps: [mainReleased ? 'Check the new version on staging (the test box).' : 'Make sure the release reaches staging (Actions → Release), then check it on the test box.', publish],
+      pipelineText: `its part is done${mainReleased ? '' : ' once the release has published the default branch to staging'}. Production is your click in editstore.`,
+    };
+  }
+  return {
+    prText: pr ? `[PR #${pr.number}](${server}/${repo}/pull/${pr.number})` : `no bump PR open yet (the bump robot opens one within 4 hours once the Linux tarball is published; branch \`${BOT_BRANCH}\`)`,
+    steps: ['Make sure the bump PR is merged (if the gate cannot merge it, its own issue says why).', 'Check the new version on staging (the test box).', publish],
+  };
+}
+
+function forkIssueText({ repo, f, release, state, prodQtum, mainQtum, pr, mode, qtum, majorFrom, held, mainReleased }) {
   const when = forkWhen(f);
   const where = f.block ? `mainnet block ${f.block}` : 'the fork';
   const title = state === 'passed'
@@ -175,7 +226,7 @@ function forkIssueText({ repo, f, release, state, prodQtum, mainQtum, pr, mode, 
   const majorText = majorFrom
     ? `\n> **This is also a new MAJOR Qtum version** (${majorFrom} → ${f.tag}). The gate never merges a major version by itself; the PR's own issue asks you to review it. Start that review now: the fork date does not wait.\n`
     : '';
-  const prText = pr ? `[PR #${pr.number}](${server}/${repo}/pull/${pr.number})` : `no bump PR open yet (the bump robot opens one within 4 hours once the Linux tarball is published; branch \`${BOT_BRANCH}\`)`;
+  const { prText, steps, pipelineText } = forkProgress({ repo, f, mainQtum, pr, held, mainReleased });
   const body = `**What happened:** Qtum Core ${f.tag} is a **hard fork**: "${f.quote}". ${release?.html_url ? `([release notes](${release.html_url}), published ${fmtUtc(release.published_at)})` : ''}
 
 **Why it matters:** boxes that still run an older Qtum when the chain reaches ${where} stop following the Qtum chain: they stop staking and their wallet shows an old chain. Customers only get the new version when it is in the **production** store.
@@ -188,12 +239,10 @@ ${majorText}
 | Default branch has | Qtum ${mainQtum || '?'} |
 | Bump PR | ${prText} |
 
-**What the pipeline does:** ${modeText}
+**What the pipeline does:** ${pipelineText || modeText}
 
 **What you do:**
-1. Make sure the bump PR is merged (if the gate cannot merge it, its own issue says why).
-2. Check the new version on staging (the test box).
-3. **Publish it to production in editstore before ${when.replace(/^about /, '')}**, with a margin: boxes need time to auto-update and to restart Qtum.
+${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}
 
 <details><summary>Prompt for Claude Code</summary>
 
@@ -211,9 +260,11 @@ This issue updates itself every 4 hours and closes by itself when the production
 //   releases   stable Qtum releases (newest first)
 //   prodQtum   the Qtum tag the production store runs (null: unreadable)
 //   mainQtum   the Qtum tag on the default branch
+//   held       the hold reason on the default branch (null: not held)
+//   mainReleased  the default branch's version is on staging already
 // A fork counts while production runs an older Qtum than the fork release.
 // Returns the forks found (for the PR text and the gate).
-export async function syncForkIssues({ gh, repo, owner, releases, prodQtum, mainQtum, qtum, pr = null, mode = 'shadow', dryRun = false, say = console.log }) {
+export async function syncForkIssues({ gh, repo, owner, releases, prodQtum, mainQtum, qtum, pr = null, mode = 'shadow', held = null, mainReleased = false, dryRun = false, say = console.log }) {
   const baseline = prodQtum || mainQtum;
   const forks = [];
   for (const r of releases || []) {
@@ -239,7 +290,7 @@ export async function syncForkIssues({ gh, repo, owner, releases, prodQtum, main
     const now = forkState(f, { qtum, now: qtum?.now || new Date() });
     const state = STATE_RANK.indexOf(before) > STATE_RANK.indexOf(now) ? before : now;
     const majorFrom = mainQtum && isMajorBump(mainQtum, f.tag) ? mainQtum : null;
-    const { title, body } = forkIssueText({ repo, f, release, state, prodQtum, mainQtum, pr, mode, qtum, majorFrom });
+    const { title, body } = forkIssueText({ repo, f, release, state, prodQtum, mainQtum, pr, mode, qtum, majorFrom, held, mainReleased });
     say(`- HARD FORK ${f.tag}: ${f.block ? `block ${f.block}, ` : ''}${forkWhen(f)} (${state}); production runs ${prodQtum || '?'}`);
     if (dryRun) continue;
     const changeNote = {

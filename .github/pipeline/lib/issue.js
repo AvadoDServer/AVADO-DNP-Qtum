@@ -1,7 +1,10 @@
 // The owner's issues: one issue per problem (key), assigned to the owner, so
 // GitHub emails it. The body is rewritten on every run (no email); a comment is
 // added only when the state changes (one email), so a problem that lasts days
-// does not flood the inbox.
+// does not flood the inbox. Editing an issue is safe to repeat, so a GitHub
+// hiccup there is retried; creating one or commenting is not (no duplicates).
+
+import { retry } from './common.js';
 
 export const LABEL = 'avado-pipeline';
 const marker = (key) => `<!-- avado-pipeline:issue key=${key} -->`;
@@ -41,7 +44,7 @@ export async function upsertIssue(gh, repo, { key, title, body, assignee, state,
   }
   const before = STATE_RE.exec(found.body || '')?.[1] || null;
   const reopened = found.state !== 'open';
-  await gh.patch(`repos/${repo}/issues/${found.number}`, { title: title.slice(0, 250), body: full, state: 'open' });
+  await retry('updating an issue', () => gh.patch(`repos/${repo}/issues/${found.number}`, { title: title.slice(0, 250), body: full, state: 'open' }));
   if (reopened || before !== state) {
     await gh.post(`repos/${repo}/issues/${found.number}/comments`, { body: `${mention}${changeNote || 'The situation changed; the description above is up to date.'}` });
   }
@@ -51,6 +54,6 @@ export async function upsertIssue(gh, repo, { key, title, body, assignee, state,
 export async function closeIssue(gh, repo, issue, comment) {
   if (!issue || issue.state !== 'open') return false;
   if (comment) await gh.post(`repos/${repo}/issues/${issue.number}/comments`, { body: comment });
-  await gh.patch(`repos/${repo}/issues/${issue.number}`, { state: 'closed', state_reason: 'completed' });
+  await retry('closing an issue', () => gh.patch(`repos/${repo}/issues/${issue.number}`, { state: 'closed', state_reason: 'completed' }));
   return true;
 }

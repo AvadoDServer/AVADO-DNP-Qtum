@@ -23,8 +23,11 @@
 // (RPC_TOKEN) as ci-release-action. Versions only go up. Nothing new: nothing is
 // published (with RELEASE_STORE=true the staging rebuild is requested again).
 //
-// DRY RUN when RPC_TOKEN is empty or DRY_RUN=true: everything up to the store
-// calls is done or shown, nothing is committed, pushed or published.
+// DRY RUN when DRY_RUN=true, or in a test copy of this repo (IPFS_PROVIDER=local,
+// no RPC_TOKEN): everything up to the store calls is done or shown, nothing is
+// committed, pushed or published. In this repo a missing RPC_TOKEN (the
+// organisation secret renamed, or this repo taken off its access list) is a
+// failure, not a silent dry run: the owner gets an issue.
 //
 // Environment: GITHUB_REPOSITORY, GITHUB_TOKEN (contents write, actions read),
 // RPC_TOKEN, DRY_RUN, RELEASE_STORE, IPFS_API (the IPFS API the tested builds
@@ -46,9 +49,12 @@ const root = process.cwd();
 const repo = env('GITHUB_REPOSITORY');
 const token = env('GITHUB_TOKEN');
 const rpcToken = env('RPC_TOKEN');
-const dryRun = !rpcToken || env('DRY_RUN') === 'true';
 const storeAgain = env('RELEASE_STORE') === 'true';
 const ipfsApi = env('IPFS_API', AVADO_IPFS_API);
+const isLocal = (url) => /localhost|127\.0\.0\.1/.test(url || '');
+const testCopy = !rpcToken && isLocal(ipfsApi);
+const dryRun = env('DRY_RUN') === 'true' || testCopy;
+const NO_TOKEN = 'RPC_TOKEN is not available to this workflow, so nothing was published. Check the organisation secret RPC_TOKEN (AvadoDServer -> Settings -> Secrets and variables -> Actions): it must exist under that name and list this repository under "Repository access". Then run Release by hand (Actions -> Release -> Run workflow).';
 const adminRpc = env('ADMIN_RPC_URL', 'https://adminrpc.ava.do');
 const storeRpc = env('STORE_RPC_URL', 'https://bo.ava.do/rpc');
 const server = env('GITHUB_SERVER_URL', 'https://github.com');
@@ -63,7 +69,6 @@ const stripBuild = (m) => {
   delete c.builddate;
   return c;
 };
-const isLocal = (url) => /localhost|127\.0\.0\.1/.test(url || '');
 
 async function ipfs(api, path) {
   const res = await fetch(`${api}/api/v0/${path}`, { method: 'POST', signal: AbortSignal.timeout(120000) });
@@ -177,6 +182,7 @@ async function releaseStore(names) {
     say(`DRY RUN: would call store.releaseStore once on ${storeRpc} (staging store rebuilt${names.length ? ` with ${names.join(', ')}` : ''})`);
     return;
   }
+  if (!rpcToken) throw new Error(NO_TOKEN);
   await rpc(storeRpc, { admintoken: rpcToken }, 'store.releaseStore', null, { strict: false });
   say(`store.releaseStore: the staging rebuild is queued${names.length ? ` with ${names.join(', ')}` : ''}. The server does not report whether the rebuild worked: check the package on the test box. Production stays the owner's click in editstore.`);
 }
@@ -188,7 +194,7 @@ async function main() {
   fetchBranch(root, token, base);
   git(root, ['checkout', '-q', '--detach', `origin/${base}`]);
   const cid = contentId(root, 'HEAD');
-  say(`${dryRun ? 'DRY RUN' + (rpcToken ? ' (DRY_RUN=true)' : ' (no RPC_TOKEN)') + ': nothing is committed or published. ' : ''}${base} at ${git(root, ['rev-parse', '--short', 'HEAD'])}, content id ${cid.slice(0, 12)}, IPFS ${ipfsApi}`);
+  say(`${dryRun ? `DRY RUN (${testCopy ? 'a test copy: IPFS_PROVIDER=local, no RPC_TOKEN' : 'DRY_RUN=true'}): nothing is committed or published. ` : ''}${base} at ${git(root, ['rev-parse', '--short', 'HEAD'])}, content id ${cid.slice(0, 12)}, IPFS ${ipfsApi}`);
 
   let prod = null;
   try { prod = await readProductionVersions({ http: gh.http }); } catch (err) { warning(`production store unreadable (${err.message}); the version guard uses git history only`); }
@@ -241,9 +247,13 @@ To publish it: in GitHub, Actions -> "PR checks" -> Run workflow, with pr = ${ba
     say(`  DRY RUN: ${RELEASES} would get: ${JSON.stringify({ [version]: record[version] })}`);
   } else {
     if (isLocal(b.record.provider)) throw new Error(`refusing to publish a build that was added to a test IPFS node (${b.record.provider}); boxes could not download it`);
+    if (!rpcToken) throw new Error(NO_TOKEN);
     writeFileSync(relFile, JSON.stringify(record, null, 2)); // the AVADOSDK's format (no final newline)
-    await rpc(adminRpc, { Authorization: rpcToken }, 'store.setPackageHash', { name, ipfsHash: hash }, { strict: true });
-    say(`  store.setPackageHash ${name} -> ${hash}: ok`);
+    // The admin RPC (AvadoDServer/avado-admin-rpc, a jayson server) answers
+    // {"result": "IPFS Hash successfully set."}; anything else stops the run
+    // before the Release commit, and the answer is in the summary.
+    const answer = await rpc(adminRpc, { Authorization: rpcToken }, 'store.setPackageHash', { name, ipfsHash: hash }, { strict: true });
+    say(`  store.setPackageHash ${name} -> ${hash}: ${JSON.stringify(answer)}`);
     git(root, ['add', '-f', RELEASES]);
     git(root, ['-c', `user.name=${BOT_NAME}`, '-c', `user.email=${BOT_EMAIL}`, 'commit', '-q', '-m', message]);
     pushWithRetry(base);
