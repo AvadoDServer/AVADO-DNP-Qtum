@@ -51,7 +51,9 @@ DAppNode's real node: the 72-hour wait with our checks green takes its place.
    it (GitHub's asset digest, the "Hash validation" list in the notes). If an
    even newer Qtum appears while the PR is open, the same PR is updated. If you
    close the PR without merging, that Qtum release is skipped and the robot
-   waits for the next one (reopen the PR to undo).
+   waits for the next one (reopen the PR to undo). A pinned tarball is never
+   pinned again: if Qtum's file changes after the bump, the robot stops and you
+   get an email (that only happens when someone replaced the file on GitHub).
 2. **Hard forks** (bump and gate). When the notes of a release newer than what
    production runs say "Mandatory update before Mainnet block N" (or its title
    says "Hard Fork"), you get an issue **at once**, with the block and its
@@ -100,8 +102,10 @@ DAppNode's real node: the 72-hour wait with our checks green takes its place.
    issue with a Claude Code prompt; Bitcoin Core majors remove RPCs and wallet
    features, v30 broke the wizard's key export and import), or when a person
    pushed changes to the checks, their test scripts or the pipeline onto the
-   robot's branch (those are yours to review and merge). Then it opens an issue
-   for you (see "What the emails mean"). Checks that failed on an outside step
+   robot's branch, or changed the Qtum tarball it pinned (`VERSION`,
+   `QTUM_SHA256`) (those are yours to review and merge). Then it opens an issue
+   for you (see "What the emails mean"). While the package is held it merges
+   nothing and sends no email. Checks that failed on an outside step
    (the build, the mainnet boot, the production image download) are first run
    once more, without an email. The gate writes its reasoning in a comment on
    the PR, updated on every run. It also starts the release when a version on
@@ -114,9 +118,10 @@ DAppNode's real node: the 72-hour wait with our checks green takes its place.
    `Release <name> <version>` (the format the release watcher and editstore
    know), then `store.setPackageHash` and one `store.releaseStore`, with the
    `RPC_TOKEN` secret, as the old `ci-release-action` did. It never builds
-   anything itself. Without a tested build nothing is published, and you get an
-   issue that says what to do (below). Without `RPC_TOKEN` it only shows what it
-   would do.
+   anything itself. Without a tested build, or without `RPC_TOKEN`, nothing is
+   published and you get an issue that says what to do (below). A release run
+   that is cancelled or runs out of time is started again by the gate; after
+   two such runs you get an issue instead.
 6. **Production**: unchanged. You publish it in editstore when you are happy
    with staging (for a hard fork: before the fork date, with a margin).
 
@@ -154,9 +159,11 @@ builds can never be released).
 
 A file `hold` in the repo root, whose first line says why, holds the package
 back: it is not bumped, not built by the checks and not released; boxes keep the
-version they have. Hard forks are still reported. You end a hold by removing the
-file in a pull request you merge yourself; its checks then build and test the
-package, and the merge publishes it to staging.
+version they have, and the gate merges nothing (also when the robot's PR itself
+contains the file). Hard forks are still reported, and their issue says the
+package is held. You end a hold by removing the file in a pull request you
+merge yourself; its checks then build and test the package, and the merge
+publishes it to staging.
 
 ### What the emails mean
 
@@ -166,10 +173,12 @@ github.com/settings/notifications.
 
 - **"[hard fork] Qtum <version>: required before mainnet block N (about <date>)"**:
   a Qtum hard fork is coming. Boxes still on an older Qtum at that block stop
-  following the chain and stop staking. Make sure the bump PR is merged, check
-  it on staging, and **publish it to production before the date**. You get
-  another email when it is less than 48 hours away (or has passed) and
-  production still runs an older Qtum. It closes by itself when production has it.
+  following the chain and stop staking. The issue says where it stands (PR
+  open, merged and on staging, or held) and what is left: make sure the bump
+  PR is merged, check it on staging, and **publish it to production before the
+  date**. You get another email when it is less than 48 hours away (or has
+  passed) and production still runs an older Qtum. It closes by itself when
+  production has it.
 - **"[needs review] Qtum <version>: new MAJOR version ..."**: the robot never
   merges a new major Qtum. The issue has the check results and a Claude Code
   prompt that walks through the removed RPCs and wallet changes. Merge the PR
@@ -181,15 +190,21 @@ github.com/settings/notifications.
   lines, and a **ready-to-paste Claude Code prompt**: run `gh pr checkout <n>`,
   start `claude`, paste the prompt, review, push. The checks run again and the
   gate merges when they are green. The issue closes by itself.
-- **"[needs review] Qtum <version>: a person changed the checks or the
-  pipeline ..."**: someone (or Claude Code) pushed changes to the checks, their
-  test scripts or the pipeline onto the robot's PR. Read them, and merge the PR
-  yourself if they are right.
+- **"[needs review] Qtum <version>: a person changed the checks, the pipeline
+  or the Qtum pin ..."**: someone (or Claude Code) pushed changes to the checks,
+  their test scripts, the pipeline or the pinned tarball onto the robot's PR.
+  Read them, and merge the PR yourself if they are right.
 - **"[pipeline broken] <workflow> workflow failed"**: the robot itself broke
-  (GitHub, qtum.info, AVADO's IPFS node or store did not answer, or a bug), or
-  the release found no tested build. Nothing reaches any box. The issue shows
-  the error, the run link and a prompt; it closes by itself after the next
-  successful run.
+  (GitHub, qtum.info, AVADO's IPFS node or store did not answer, or a bug), the
+  release found no tested build, or `RPC_TOKEN` is missing. Nothing reaches any
+  box. The issue shows the error, the run link and a prompt; it closes by
+  itself after the next successful run. The bump robot and the gate run every
+  few hours, so they email only when **two runs in a row** failed (one GitHub
+  hiccup sends nothing); a failed release emails at once.
+- **"[pipeline broken] <package> <version> is not released: its release runs
+  were cancelled"**: two release runs of a merged version ended without a
+  result (cancelled, or out of time). Run Release by hand; the issue closes by
+  itself when the version is released.
 - **"[pipeline] PAT_TOKEN was rejected: renew it"**: the personal token expired.
   The robot keeps working without it; renew it when convenient (see "Secrets").
 - A comment on one of these issues means the situation changed (a new failure,
@@ -199,8 +214,10 @@ Also watch for: the release watcher (`AvadoDServer/avado-release-control`)
 emails "URGENT: pipeline workflows stopped" when `bump.yml` or `gate.yml` is
 disabled or keeps failing (once this repo is added to its `workflows` list).
 GitHub switches off scheduled workflows in a public repo after 60 days without
-commits ("disabled_inactivity"); the fix is Actions → the workflow → **Enable
-workflow**.
+commits ("disabled_inactivity"), and Qtum releases come every 4 to 8 months:
+both robots re-enable themselves on every scheduled run through the API (job
+`keepalive`, no commits; not in a test copy), which resets that clock. If it
+still happens, the fix is Actions → the workflow → **Enable workflow**.
 
 ### Secrets
 
@@ -210,12 +227,19 @@ workflow**.
 - `PAT_TOKEN` (repository secret, optional): the bump robot pushes and opens its
   PR with it, so the checks start by themselves (GitHub does not start
   workflows for changes made with the built-in token). Use a **fine-grained**
-  token: resource owner AvadoDServer, only this repository, Contents and Pull
-  requests read and write, with an expiry date. Not a classic `repo` token: it
-  would open every AvadoDServer repository. When it is missing or expired, the
-  robot starts the checks itself through `workflow_dispatch` (the PR then also
-  shows a "PR checks" run marked "action required" that can be ignored) and
-  emails you once to renew it.
+  token: resource owner AvadoDServer, only this repository, Contents, Pull
+  requests and **Workflows** read and write, with an expiry date. Not a classic
+  `repo` token: it would open every AvadoDServer repository. When it is missing
+  or expired, the robot starts the checks itself through `workflow_dispatch`
+  (the PR then also shows a "PR checks" run marked "action required" that can
+  be ignored) and emails you once to renew it.
+  Why Workflows: GitHub lets a token bring a change of `.github/workflows/` into
+  an existing branch only with that permission, and the robot's branch must
+  take in the default branch when the pipeline itself changed there. Without
+  it, a PR with only the robot's commits is replaced by a new PR made from the
+  default branch (the old one is closed, which does not skip the release); a
+  PR with commits by people gets an email asking you to merge the default
+  branch into it yourself.
 - `WATCHER_READ_TOKEN` (optional): lets the gate read the release watcher's
   URGENT issues. A fine-grained token for `AvadoDServer/avado-release-control`
   with Issues: read only. Without it the gate uses the Qtum release notes, and
@@ -252,6 +276,11 @@ node --test ".github/pipeline/test/*.test.mjs"   # the gate's rules (Node 22)
 (AVADOSDK pinned at commit 23d6757). `scripts/ci/content-id.sh` prints the
 content id the tested build is named after.
 
+The production image (about 360 MB from AVADO's IPFS gateway) is kept in
+GitHub's cache between check runs, named by its IPFS hash; every cached file is
+checked against that hash before it is used. The candidate build is still added
+to AVADO's IPFS node on every check run, as `ci-build-action` did.
+
 The wallet regression runs every wallet offline (mainnet, no peers), so it is
 exact and repeatable; its wallets hold no coins. Their keys stay on the runner
 (`<out>/keys/`) and are never uploaded. The old Qtum versions run with the
@@ -265,8 +294,8 @@ nor a funded wallet).
 
 To try the pipeline without touching this repo or the store: push it to a
 private repository, set the variable `IPFS_PROVIDER=local` there (builds go to a
-throwaway IPFS node on the runner), do not add `RPC_TOKEN` (the release is a
-dry run), set `PIPELINE_MODE=on` if the gate should merge, and tick Settings →
+throwaway IPFS node on the runner), do not add `RPC_TOKEN` (with
+`IPFS_PROVIDER=local` the release is a dry run), set `PIPELINE_MODE=on` if the gate should merge, and tick Settings →
 Actions → General → "Allow GitHub Actions to create and approve pull requests"
 (needed without `PAT_TOKEN`). Run "Bump Qtum" by hand with a `version` to
 simulate a release; a version that does not exist makes the build fail, which
