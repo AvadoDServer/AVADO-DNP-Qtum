@@ -46,6 +46,12 @@ concurrency:
   group: pr-checks-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
+# bash -eo pipefail for every step: a failing check in front of a pipe (the
+# smoke test's "| tee") fails its step.
+defaults:
+  run:
+    shell: bash
+
 env:
   # IPFS API the AVADOSDK adds the build to. Repository variable IPFS_PROVIDER:
   # empty = AVADO's node (as ci-build-action), "local" = a throwaway kubo on
@@ -164,17 +170,19 @@ jobs:
         if: env.IPFS_API == 'http://127.0.0.1:5001'
         run: |
           docker run -d --name ipfs -p 127.0.0.1:5001:5001 "$KUBO_IMAGE" >/dev/null
-          for i in $(seq 1 60); do curl -fsS -X POST http://127.0.0.1:5001/api/v0/version >/dev/null 2>&1 && exit 0; sleep 1; done
+          for _ in $(seq 1 60); do curl -fsS -X POST http://127.0.0.1:5001/api/v0/version >/dev/null 2>&1 && exit 0; sleep 1; done
           docker logs ipfs; exit 1
       - id: build
         name: AVADOSDK build (build, add to IPFS)
         run: |
           record=$(scripts/ci/sdk-build.sh "$RUNNER_TEMP/checks/build" "$IPFS_API")
           cat "$record"
-          echo "image=$(jq -r '.name + ":" + .version' "$record")" >>"$GITHUB_OUTPUT"
-          echo "name=$(jq -r .name "$record")" >>"$GITHUB_OUTPUT"
-          echo "qtum=$(jq -r .qtum "$record")" >>"$GITHUB_OUTPUT"
-          echo "content=$(jq -r .contentId "$record")" >>"$GITHUB_OUTPUT"
+          {
+            echo "image=$(jq -r '.name + ":" + .version' "$record")"
+            echo "name=$(jq -r .name "$record")"
+            echo "qtum=$(jq -r .qtum "$record")"
+            echo "content=$(jq -r .contentId "$record")"
+          } >>"$GITHUB_OUTPUT"
           # Pinned by id: loading the production image later re-tags <name>:<its version>.
           docker tag "$(jq -r .imageId "$record")" avado-ci/candidate:latest
       - name: Exact Qtum version
@@ -188,12 +196,38 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/checks/smoke"
           test/smoke-test.sh avado-ci/candidate:latest 2>&1 | tee "$RUNNER_TEMP/checks/smoke/smoke.log"
+      # The production image (about 360 MB from AVADO's IPFS gateway) is kept in
+      # GitHub's cache between runs, named by its IPFS hash; production-image.sh
+      # checks every cached file against that hash, so a cache can never
+      # change what is tested.
+      - id: prodcache
+        name: Production image cache (restore)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/production-cache
+          key: qtum-production-image-latest
+          restore-keys: qtum-production-image-
       - id: production
         name: Production image (from the store)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          PRODUCTION_CACHE: ${{ runner.temp }}/production-cache
         run: |
           record=$(scripts/ci/production-image.sh "${{ steps.build.outputs.name }}" avado-ci/production:latest "$RUNNER_TEMP/checks/production")
           cat "$record"
+          cid=$(jq -r '.imageHash | sub("^/ipfs/"; "")' "$record")
+          # only today's production image goes back into the cache
+          find "$PRODUCTION_CACHE" -type f ! -name "$cid.tar.xz" -delete
+          echo "cid=$cid" >>"$GITHUB_OUTPUT"
+      - name: Production image cache (save)
+        if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.prodcache.outputs.cache-matched-key != format('qtum-production-image-{0}', steps.production.outputs.cid) }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/production-cache
+          key: qtum-production-image-${{ steps.production.outputs.cid }}
       - id: oldqtum
         name: Old Qtum builds (download for the wallet test)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

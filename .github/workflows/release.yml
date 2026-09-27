@@ -6,8 +6,11 @@ name: Release
 # <version>", then store.setPackageHash and one store.releaseStore, with the
 # RPC_TOKEN secret, like ci-release-action.
 # A held package (file "hold") is never published. No new version: nothing is
-# published. No RPC_TOKEN: a dry run. No tested build: nothing is published,
-# and the owner gets an issue. Production stays the owner's click in editstore.
+# published. No tested build, or no RPC_TOKEN: nothing is published, and the
+# owner gets an issue (a test copy with IPFS_PROVIDER=local and no RPC_TOKEN is
+# a dry run). Production stays the owner's click in editstore.
+# A run that is cancelled or runs out of time also opens the issue, and the
+# gate starts another run (twice at most, then it opens an issue).
 # Details: .github/pipeline/release.mjs.
 on:
   push:
@@ -31,6 +34,12 @@ permissions:
 concurrency:
   group: release
   cancel-in-progress: false
+
+# bash -eo pipefail for every step: a failing command in front of a pipe
+# (for example "check | tee log") fails its step.
+defaults:
+  run:
+    shell: bash
 
 env:
   # Where the PR checks added the builds (the same expression as pr-checks.yml).
@@ -58,11 +67,12 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           RELEASE_STORE: ${{ inputs.release_store }}
       - name: Tell the owner if this workflow broke
-        if: failure()
+        if: failure() || cancelled()
         run: node .github/pipeline/report.mjs failure "Release"
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PIPELINE_OWNER: ${{ vars.PIPELINE_OWNER }}
+          JOB_STATUS: ${{ job.status }}
       - if: success()
         run: node .github/pipeline/report.mjs success "Release"
         env:

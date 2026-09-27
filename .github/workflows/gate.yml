@@ -30,6 +30,12 @@ concurrency:
   group: gate
   cancel-in-progress: false
 
+# bash -eo pipefail for every step: a failing command in front of a pipe
+# (for example "check | tee log") fails its step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   gate:
     if: vars.PIPELINE_MODE != 'off'
@@ -53,12 +59,37 @@ jobs:
           PIPELINE_MODE: ${{ vars.PIPELINE_MODE }}
           PIPELINE_OWNER: ${{ vars.PIPELINE_OWNER }}
       - name: Tell the owner if this workflow broke
-        if: failure()
+        if: failure() || cancelled()
         run: node .github/pipeline/report.mjs failure "Gate"
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PIPELINE_OWNER: ${{ vars.PIPELINE_OWNER }}
+          JOB_STATUS: ${{ job.status }}
       - if: success()
         run: node .github/pipeline/report.mjs success "Gate"
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+  # GitHub switches off the scheduled workflows of a public repo after 60 days
+  # without commits, and Qtum releases come every 4 to 8 months. Enabling them
+  # through the API resets that clock (no commit needed; also while
+  # PIPELINE_MODE is off, so turning the robots on later just works). Not in a
+  # test copy (IPFS_PROVIDER=local): a private repo is never switched off.
+  keepalive:
+    if: github.event_name == 'schedule' && vars.IPFS_PROVIDER != 'local'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Keep the scheduled robots switched on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for wf in bump.yml gate.yml; do
+            if gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/enable" >/dev/null; then
+              echo "$wf: enabled"
+            else
+              echo "::warning::could not re-enable $wf (the release watcher reports a switched-off workflow)"
+            fi
+          done
