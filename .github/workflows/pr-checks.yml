@@ -194,8 +194,15 @@ jobs:
         run: |
           record=$(scripts/ci/production-image.sh "${{ steps.build.outputs.name }}" avado-ci/production:latest "$RUNNER_TEMP/checks/production")
           cat "$record"
+      - id: oldqtum
+        name: Old Qtum builds (download for the wallet test)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LEGACY_BIN_CACHE: ${{ runner.temp }}/legacy-bins
+          LEGACY_FETCH_ONLY: '1'
+        run: scripts/ci/legacy-wallet-test.sh avado-ci/candidate:latest avado-ci/candidate:latest "$RUNNER_TEMP/checks/wallets"
       - name: Legacy wallets keep every key (production image, then this build)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.production.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.production.outcome == 'success' && steps.oldqtum.outcome == 'success' }}
         env:
           LEGACY_BIN_CACHE: ${{ runner.temp }}/legacy-bins # old Qtum builds, not uploaded
         run: scripts/ci/legacy-wallet-test.sh avado-ci/candidate:latest avado-ci/production:latest "$RUNNER_TEMP/checks/wallets"

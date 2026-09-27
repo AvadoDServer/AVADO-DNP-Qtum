@@ -31,7 +31,8 @@
 # errors; and the candidate stops cleanly.
 #
 # The old Qtum builds are downloaded from github.com/qtumproject/qtum and
-# checked against pinned sha256 values (LEGACY_BIN_CACHE=<dir> keeps them).
+# checked against pinned sha256 values (LEGACY_BIN_CACHE=<dir> keeps them;
+# LEGACY_FETCH_ONLY=1 only downloads them).
 # The wallets hold no coins. Their keys are written to <out-dir>/keys/ (do not
 # upload that folder).
 set -uo pipefail
@@ -100,6 +101,12 @@ fetch_qtum() { # <url> <sha256> <dir>
 }
 fetch_qtum "$QTUM_22_URL" "$QTUM_22_SHA256" "$BINS/qtum-22.1"
 fetch_qtum "$QTUM_020_URL" "$QTUM_020_SHA256" "$BINS/qtum-0.20.3"
+# LEGACY_FETCH_ONLY=1: only download and check the old builds (the PR checks do
+# this in a step of its own, which the gate re-runs when GitHub did not answer).
+if [ "${LEGACY_FETCH_ONLY:-}" = 1 ]; then
+  log "old Qtum builds ready in $BINS"
+  exit 0
+fi
 for img in "$CAND" "$PROD"; do docker image inspect "$img" >/dev/null 2>&1 || die "image $img not found"; done
 
 # --- helpers ---------------------------------------------------------------------------

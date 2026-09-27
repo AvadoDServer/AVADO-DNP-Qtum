@@ -57,7 +57,7 @@ const ALLOWED_BOT_FILES = new Set([COMPOSE, MANIFEST]);
 export const OWNER_MERGE_FILES = /^(\.github\/|scripts\/|test\/|hold$|releases\.json$)/;
 // Steps whose failure is usually outside our package (public network, IPFS
 // node, production store, GitHub downloads, the runner): they are re-run once.
-export const RETRYABLE_STEPS = /^(AVADOSDK build|Boots on Qtum mainnet|Production image|Throwaway IPFS node|Qtum release tarball|Free disk space|Set up job|Run actions\/|Post Run actions\/|Complete job)/;
+export const RETRYABLE_STEPS = /^(AVADOSDK build|Boots on Qtum mainnet|Production image|Old Qtum builds|Throwaway IPFS node|Qtum release tarball|Free disk space|Set up job|Run actions\/|Post Run actions\/|Complete job)/;
 
 // The rules, as a pure function (tested in test/pipeline.test.mjs).
 //   checks: 'success' | 'failure' | 'error' | 'pending' | 'missing'

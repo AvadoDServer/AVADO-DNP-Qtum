@@ -114,7 +114,7 @@ test('a person changing the checks or the pipeline on the bot branch leaves the 
 test('checks that failed on an outside step run once more, without an issue', () => {
   const outside = [{ name: 'package', step: 'Boots on Qtum mainnet' }, { name: 'package', step: 'AVADOSDK build (build, add to IPFS)' }];
   assert.ok(retryable(outside));
-  assert.ok(retryable([{ name: 'package', steps: ['Production image (from the store)'] }]));
+  assert.ok(retryable([{ name: 'package', steps: ['Production image (from the store)', 'Old Qtum builds (download for the wallet test)'] }]));
   assert.ok(retryable([{ name: 'package', step: null }]), 'a job lost without a failed step (runner) is retried');
   for (const step of ['Legacy wallets keep every key (production image, then this build)', 'Regtest smoke test (every RPC the wizard uses)',
     'Every qtumd option and qtum.conf key is accepted', 'Exact Qtum version']) {
