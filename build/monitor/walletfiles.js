@@ -89,7 +89,7 @@ function copyDirDurable(from, to) {
     }
 }
 
-// Move a file into a directory (same volume, so a rename).
+// Move a file or directory into a directory (same volume, so a rename).
 function moveInto(file, dir) {
     if (!exists(file)) return null;
     fs.mkdirSync(dir, { recursive: true });
@@ -97,6 +97,23 @@ function moveInto(file, dir) {
     fs.renameSync(file, dst);
     fsyncPath(dir);
     return dst;
+}
+
+// Names in a directory ([] when it does not exist).
+function listDir(dir) {
+    try {
+        return fs.readdirSync(dir);
+    } catch (e) {
+        return [];
+    }
+}
+
+function removeQuietly(file) {
+    try {
+        fs.unlinkSync(file);
+    } catch (e) {
+        // not there
+    }
 }
 
 function timestamp() {
@@ -112,5 +129,7 @@ module.exports = {
     copyFileDurable,
     copyDirDurable,
     moveInto,
+    listDir,
+    removeQuietly,
     timestamp,
 };

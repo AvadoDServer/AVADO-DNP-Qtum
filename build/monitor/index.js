@@ -8,12 +8,19 @@ const supervisord = require('supervisord');
 const supervisordclient = supervisord.connect('http://localhost:9001');
 const ini = require('ini');
 
-const JSONdb = require('simple-json-db');
-const dbFile = '/package/data/config.json';
-const db = new JSONdb(dbFile);
-
+const JsonStore = require("./jsonstore");
 const qtumkeys = require("./qtumkeys");
 const walletfiles = require("./walletfiles");
+
+const log = (...args) => console.log("[monitor]", ...args);
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const now = () => new Date().toISOString();
+
+// Settings (shown by /getenv, changed by /setenv)
+const dbFile = '/package/data/config.json';
+const db = new JsonStore(dbFile, log);
+// Internal wallet state (upgrade, restore). Never exposed through /getenv or /setenv.
+const walletState = new JsonStore('/package/data/wallet-state.json', log);
 
 const QTUM_CONF_PATH = process.env.QTUM_CONF_PATH || '/package/data/qtum.conf';
 const QTUM_DATA_PATH = process.env.QTUM_DATA_PATH || '/package/data/qtum';
@@ -28,11 +35,30 @@ const RESTORE_DIR = '/package/data/restore';
 // that was not closed cleanly, so that Qtum v30 can migrate it.
 const LEGACY_WALLET_TOOL = '/usr/local/lib/qtum-legacy/qtum-wallet';
 
-// config.json keys
-const MIGRATION_KEY = "WALLET_MIGRATION";
-const NEW_BACKUP_KEY = "NEW_BACKUP_REQUIRED";
-// keys that end up in qtum.conf; changing them restarts Qtum
+// wallet-state.json keys
+const MIGRATION_KEY = "migration";
+const NEW_BACKUP_KEY = "newBackupRequired";
+const RESTORE_KEY = "restore";
+const WALLET_CREATED_KEY = "walletCreatedAt";
+
+// Settings the wizard may change, and their allowed values. The first two end
+// up in qtum.conf; changing them restarts Qtum.
 const QTUM_CONFIG_KEYS = ["DELEGATION_FEE_PERCENT", "MIN_DELEGATION_AMOUNT"];
+const SETTINGS = {
+    DELEGATION_FEE_PERCENT: {
+        valid: (v) => Number.isInteger(v) && v >= 0 && v <= 100,
+        error: "The delegation fee must be a whole number from 0 to 100.",
+    },
+    MIN_DELEGATION_AMOUNT: {
+        valid: (v) => typeof v === "number" && isFinite(v) && v >= 0,
+        error: "The minimum delegation amount must be a number of 0 or more.",
+    },
+    // wizards of package 0.0.13 and older record a downloaded backup this way
+    BACKUP_REQUIRED: {
+        valid: (v) => v === false,
+        error: "This setting cannot be changed here.",
+    },
+};
 
 console.log("Monitor starting...");
 
@@ -44,14 +70,18 @@ const defaults =
     "BACKUP_REQUIRED": true,
 };
 
-const log = (...args) => console.log("[monitor]", ...args);
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-const now = () => new Date().toISOString();
-
 class UserError extends Error {
     constructor(message, httpCode = 400) {
         super(message);
         this.httpCode = httpCode;
+    }
+}
+
+// A wallet problem the wizard explains in its own words (problem = a short code)
+class WalletProblem extends Error {
+    constructor(message, problem) {
+        super(message);
+        this.problem = problem;
     }
 }
 
@@ -60,16 +90,31 @@ class UserError extends Error {
 // ---------------------------------------------------------------------------
 
 // state: starting | restarting | migrating | restoring | ready | needs-passphrase | failed | stopped
-let walletStatus = { state: "starting", message: "" };
+// problem: wallet-missing | null
+let walletStatus = { state: "starting", message: "", problem: null };
 let importStatus = null;   // { state: running | done | failed, message }
+let restoreResult = null;  // { state: failed, message, at } of the last restore
 let busy = null;           // name of the wallet task that is running
 let restartRequested = false;
 
 const importRunning = () => !!(importStatus && importStatus.state === "running");
 
-const setStatus = (state, message = "") => {
-    walletStatus = { state, message };
+// One fixed line per wallet state that support can search the logs for,
+// repeated every hour while the wallet needs attention (it does not stake then).
+const NEEDS_ATTENTION = ["failed", "needs-passphrase"];
+const logWalletState = () => {
+    const problem = walletStatus.problem ? ` problem=${walletStatus.problem}` : "";
+    const reason = walletStatus.message ? ` reason=${JSON.stringify(walletStatus.message)}` : "";
+    console.log(`QTUM_WALLET_STATE=${walletStatus.state}${problem}${reason}`);
+};
+setInterval(() => {
+    if (NEEDS_ATTENTION.includes(walletStatus.state)) logWalletState();
+}, 60 * 60 * 1000);
+
+const setStatus = (state, message = "", problem = null) => {
+    walletStatus = { state, message, problem };
     log(`wallet status: ${state}${message ? ` (${message})` : ""}`);
+    if (["ready", "stopped"].concat(NEEDS_ATTENTION).includes(state)) logWalletState();
 };
 
 const BUSY_MESSAGE = "Your Qtum wallet is busy right now. Please try again in a few minutes.";
@@ -84,7 +129,7 @@ const runTask = (name, fn) => {
             return await fn();
         } catch (err) {
             log(`task ${name} failed:`, err.message);
-            setStatus("failed", err.message);
+            setStatus("failed", err.message, err.problem || null);
         } finally {
             busy = null;
             runRequestedRestart();
@@ -111,6 +156,7 @@ const runRequestedRestart = () => {
 // Qtum JSON-RPC
 // ---------------------------------------------------------------------------
 
+// An error answer from qtumd (as opposed to a lost or refused connection)
 class RpcError extends Error {
     constructor(message, code) {
         super(message);
@@ -152,11 +198,23 @@ const rpc = (method, params = [], opts = {}) => {
                 if (parsed.error) reject(new RpcError(parsed.error.message, parsed.error.code));
                 else resolve(parsed.result);
             });
+            res.on("aborted", () => reject(new Error(`RPC ${method}: the connection was lost`)));
+            res.on("error", reject);
         });
         if (timeout > 0) req.setTimeout(timeout, () => req.destroy(new Error(`RPC ${method} timed out`)));
         req.on("error", reject);
         req.end(body);
     });
+};
+
+// The words shown to the owner for an error from qtumd or the monitor
+const plainMessage = (err) => {
+    const message = String((err && err.message) || err);
+    const code = err && err.code;
+    if (/not loaded|does not exist/i.test(message)) return "Your wallet is not loaded yet. Please wait a moment and try again.";
+    if (/walletpassphrase|unlock/i.test(message)) return "Your wallet is locked with a password, so this cannot be done here. Please contact AVADO support.";
+    if (/ECONNREFUSED|ECONNRESET|socket hang up|-28|Loading|Verifying|Rescanning/i.test(`${code} ${message}`)) return "The Qtum node is still starting. Please try again in a few minutes.";
+    return message;
 };
 
 // ---------------------------------------------------------------------------
@@ -169,12 +227,11 @@ const supervisor = (method, ...args) => new Promise((resolve, reject) => {
 
 const faultText = (err) => String((err && (err.faultString || err.message)) || err);
 
-const qtumProcessState = async () => {
+const qtumProcessInfo = async () => {
     try {
-        const info = await supervisor("getProcessInfo", "qtum");
-        return info.statename;
+        return await supervisor("getProcessInfo", "qtum");
     } catch (err) {
-        return "UNKNOWN";
+        return { statename: "UNKNOWN", pid: 0 };
     }
 };
 
@@ -206,7 +263,7 @@ const waitForRpc = async () => {
         } catch (err) {
             // -28 = still starting (loading blocks, verifying, loading wallets)
         }
-        const state = await qtumProcessState();
+        const state = (await qtumProcessInfo()).statename;
         if (["STOPPED", "EXITED", "FATAL"].includes(state)) {
             throw new Error(`the Qtum node is not running (${state})`);
         }
@@ -236,6 +293,17 @@ const syncQtumConf = () => {
 
 const walletFile = () => walletfiles.defaultWalletFile(QTUM_DATA_PATH);
 const walletSideFiles = (file) => [file, `${file}-journal`, `${file}-wal`, `${file}-shm`];
+// Next to the default wallet: the Berkeley DB log files of the legacy wallet,
+// and the extra wallets an upgrade creates for watch-only and solvable
+// scripts. An upgrade that starts over must be able to create those again.
+const upgradeFiles = (dir) => ["database", "db.log", "default_wallet_watchonly", "default_wallet_solvables"].map((name) => path.join(dir, name));
+
+const getMigration = () => walletState.get(MIGRATION_KEY) || null;
+const updateMigration = (changes) => {
+    const migration = Object.assign({}, getMigration(), changes);
+    walletState.set(MIGRATION_KEY, migration);
+    return migration;
+};
 
 // Is the copy in `migration.backupDir` a copy of the wallet file as it is now?
 const backupMatches = (migration, file) => {
@@ -247,8 +315,8 @@ const backupMatches = (migration, file) => {
 };
 
 // Copy the legacy wallet (and its Berkeley DB log files) before anything touches it.
-const backupLegacyWallet = (file) => {
-    const dir = path.join(BACKUP_DIR, `${walletfiles.timestamp()}-legacy-wallet-before-upgrade`);
+const backupLegacyWallet = (file, label = "legacy-wallet-before-upgrade") => {
+    const dir = path.join(BACKUP_DIR, `${walletfiles.timestamp()}-${label}`);
     walletfiles.copyFileDurable(file, path.join(dir, "wallet.dat"));
     const wdir = path.dirname(file);
     if (walletfiles.exists(path.join(wdir, "database"))) {
@@ -269,27 +337,68 @@ const backupLegacyWallet = (file) => {
     return { dir, sha256 };
 };
 
-// Runs before qtumd starts (and before a retry). Never deletes a wallet file.
+// Put the legacy wallet back exactly as it was copied: wallet.dat plus its
+// Berkeley DB log files. Whatever is there now is moved aside first (never
+// deleted). qtumd must be stopped.
+const putLegacyWalletBack = (backupDir, reason) => {
+    const file = walletFile();
+    const dir = path.dirname(file);
+    const aside = path.join(BACKUP_DIR, `${walletfiles.timestamp()}-${reason}`);
+    walletSideFiles(file).concat(upgradeFiles(dir)).forEach((f) => walletfiles.moveInto(f, aside));
+    walletfiles.copyFileDurable(path.join(backupDir, "wallet.dat"), file);
+    if (walletfiles.exists(path.join(backupDir, "database"))) {
+        walletfiles.copyDirDurable(path.join(backupDir, "database"), path.join(dir, "database"));
+    }
+    if (walletfiles.exists(path.join(backupDir, "db.log"))) {
+        walletfiles.copyFileDurable(path.join(backupDir, "db.log"), path.join(dir, "db.log"));
+    }
+    log(`legacy wallet put back from ${backupDir}; what was there before is in ${aside}`);
+};
+
+// Put the wallet files that a restore moved to `saveDir` back in place.
+const undoRestore = (saveDir) => {
+    const file = walletFile();
+    const dir = path.dirname(file);
+    walletfiles.removeQuietly(`${file}.partial`);
+    if (walletfiles.exists(file)) walletfiles.moveInto(file, path.join(BACKUP_DIR, `${walletfiles.timestamp()}-incomplete-restore`));
+    walletfiles.listDir(saveDir).forEach((name) => fs.renameSync(path.join(saveDir, name), path.join(dir, name)));
+    log(`restore undone; the previous wallet is back in place (from ${saveDir})`);
+};
+
+// A restore was interrupted (container stopped while the backup was copied):
+// keep the backup when it was copied completely, otherwise put the previous
+// wallet back.
+const finishInterruptedRestore = () => {
+    const restore = walletState.get(RESTORE_KEY);
+    if (!restore || restore.state !== "running") return;
+    if (walletfiles.walletFileKind(walletFile())) {
+        walletState.set(RESTORE_KEY, Object.assign({}, restore, { state: "done", finishedAt: now() }));
+        log("the interrupted restore had already put the backup in place");
+    } else {
+        undoRestore(restore.saveDir);
+        walletState.set(RESTORE_KEY, Object.assign({}, restore, { state: "failed", error: "interrupted", finishedAt: now() }));
+        restoreResult = { state: "failed", message: "The restore was interrupted.", at: now() };
+    }
+};
+
+// Runs while qtumd is stopped (before it starts). Never deletes a wallet file.
 const prepareWalletFiles = () => {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     fs.mkdirSync(RESTORE_DIR, { recursive: true });
+    finishInterruptedRestore();
     const file = walletFile();
-    let migration = db.get(MIGRATION_KEY) || null;
+    let migration = getMigration();
 
     // An upgrade was interrupted (container stopped while migrating):
     // put the legacy wallet back from our copy and upgrade again.
     if (migration && migration.state === "migrating") {
         const copy = migration.backupDir ? path.join(migration.backupDir, "wallet.dat") : null;
         if (copy && walletfiles.walletFileKind(copy) === "bdb") {
-            const aside = path.join(BACKUP_DIR, `${walletfiles.timestamp()}-interrupted-upgrade`);
-            walletSideFiles(file).forEach((f) => walletfiles.moveInto(f, aside));
-            walletfiles.copyFileDurable(copy, file);
-            log(`previous wallet upgrade was interrupted; restored the legacy wallet from ${copy}`);
-            migration = Object.assign({}, migration, { state: "pending" });
-            db.set(MIGRATION_KEY, migration);
+            putLegacyWalletBack(migration.backupDir, "interrupted-upgrade");
+            log("the previous wallet upgrade was interrupted; it starts again from the saved copy");
+            migration = updateMigration({ state: "pending" });
         } else {
-            migration = Object.assign({}, migration, { state: "failed", error: "the previous wallet upgrade was interrupted and no copy of the old wallet was found" });
-            db.set(MIGRATION_KEY, migration);
+            migration = updateMigration({ state: "failed", error: "the previous wallet upgrade was interrupted and no copy of the old wallet was found" });
         }
     }
 
@@ -303,23 +412,68 @@ const prepareWalletFiles = () => {
             const backup = backupLegacyWallet(file);
             migration = { state: "pending", backupDir: backup.dir, sha256: backup.sha256, detectedAt: now() };
         }
-        db.set(MIGRATION_KEY, migration);
+        walletState.set(MIGRATION_KEY, migration);
     } else if (migration && ["pending", "failed", "needs-passphrase"].includes(migration.state)) {
         // the legacy wallet was replaced (e.g. a restore) - nothing left to upgrade
-        db.set(MIGRATION_KEY, Object.assign({}, migration, { state: "superseded" }));
+        updateMigration({ state: "superseded" });
     }
 };
 
-// Make sure the legacy wallet file is in place after a failed migration
-// (Qtum restores it itself; this is a second safety net).
-const ensureLegacyWalletInPlace = (migration) => {
-    const file = walletFile();
-    const copy = migration && migration.backupDir ? path.join(migration.backupDir, "wallet.dat") : null;
-    if (walletfiles.walletFileKind(file) === "bdb" || !copy || !walletfiles.exists(copy)) return;
-    const aside = path.join(BACKUP_DIR, `${walletfiles.timestamp()}-failed-upgrade`);
-    walletSideFiles(file).forEach((f) => walletfiles.moveInto(f, aside));
-    walletfiles.copyFileDurable(copy, file);
-    log(`legacy wallet put back from ${copy}`);
+// Is the default wallet loaded, and is it a descriptor (upgraded) wallet?
+const descriptorWalletLoaded = async () => {
+    try {
+        if (!(await rpc("listwallets", [], { timeout: 15000 })).includes("")) return false;
+        return (await rpc("getwalletinfo", [], { wallet: true, timeout: 15000 })).descriptors === true;
+    } catch (err) {
+        return false;
+    }
+};
+
+// After a failed upgrade the legacy wallet must be in place again (Qtum puts
+// it back itself; this is a second safety net). Files are only moved while
+// qtumd is stopped.
+const ensureLegacyWalletInPlace = async () => {
+    const migration = getMigration();
+    if (walletfiles.walletFileKind(walletFile()) === "bdb") return;
+    if (!migration || !migration.backupDir) return;
+    if (walletfiles.walletFileKind(path.join(migration.backupDir, "wallet.dat")) !== "bdb") return;
+    await stopQtum();
+    putLegacyWalletBack(migration.backupDir, "failed-upgrade");
+    await startQtum();
+    await waitForRpc();
+};
+
+// migratewallet did not answer: the connection to qtumd was lost. Find out
+// whether qtumd was stopped or restarted in the middle ("interrupted"),
+// finished the upgrade ("done") or reported a failure we did not receive
+// ("failed"), before any wallet file is touched.
+const afterLostConnection = async (pidBefore) => {
+    for (;;) {
+        const info = await qtumProcessInfo();
+        if (info.pid !== pidBefore) return "interrupted";
+        let upgrading = null;
+        try {
+            const rpcInfo = await rpc("getrpcinfo", [], { timeout: 15000 });
+            upgrading = rpcInfo.active_commands.some((c) => c.method === "migratewallet");
+        } catch (err) {
+            // no answer (yet)
+        }
+        if (upgrading === false) return (await descriptorWalletLoaded()) ? "done" : "failed";
+        await sleep(5000);
+    }
+};
+
+const recordMigrationDone = (result) => {
+    updateMigration({
+        state: "done",
+        migratedAt: now(),
+        error: null,
+        qtumBackup: (result && result.backup_path) || null,
+        watchonlyWallet: (result && result.watchonly_name) || null,
+        solvablesWallet: (result && result.solvables_name) || null,
+    });
+    walletState.set(NEW_BACKUP_KEY, true);
+    log(`wallet upgraded to a descriptor wallet (Qtum's own copy of the old wallet: ${(result && result.backup_path) || "see the wallet directory"})`);
 };
 
 // Let the Qtum v29 wallet tool open and close the legacy wallet once. This
@@ -339,43 +493,81 @@ const flushLegacyWallet = () => new Promise((resolve) => {
 
 // Upgrade the legacy default wallet to a descriptor wallet (qtumd must be running).
 const migrateDefaultWallet = async (passphrase) => {
-    let migration = db.get(MIGRATION_KEY) || {};
     setStatus("migrating");
-    db.set(MIGRATION_KEY, Object.assign({}, migration, { state: "migrating", startedAt: now() }));
+    updateMigration(Object.assign({ state: "migrating", startedAt: now() }, passphrase ? { encrypted: true } : {}));
     let flushed = false;
+    let startedOver = false;
     for (;;) {
+        const pidBefore = (await qtumProcessInfo()).pid;
         try {
             const result = await rpc("migratewallet", passphrase ? ["", passphrase] : [""], { timeout: 0 });
-            migration = Object.assign({}, db.get(MIGRATION_KEY), {
-                state: "done",
-                migratedAt: now(),
-                error: null,
-                qtumBackup: result.backup_path || null,
-                watchonlyWallet: result.watchonly_name || null,
-                solvablesWallet: result.solvables_name || null,
-            });
-            db.set(MIGRATION_KEY, migration);
-            db.set(NEW_BACKUP_KEY, true);
-            log(`wallet upgraded to a descriptor wallet (Qtum's own copy of the old wallet: ${result.backup_path})`);
+            recordMigrationDone(result);
             return true;
         } catch (err) {
-            const message = String(err.message);
+            let message = String(err.message);
             log("wallet upgrade failed:", message);
-            ensureLegacyWalletInPlace(migration);
+            if (!(err instanceof RpcError)) {
+                const outcome = await afterLostConnection(pidBefore);
+                log(`connection to Qtum lost during the wallet upgrade; outcome: ${outcome}`);
+                if (outcome === "done") {
+                    recordMigrationDone(null);
+                    return true;
+                }
+                if (outcome === "interrupted" && !startedOver) {
+                    // qtumd was stopped or restarted in the middle of the upgrade
+                    startedOver = true;
+                    await stopQtum();
+                    putLegacyWalletBack(getMigration().backupDir, "interrupted-upgrade");
+                    await startQtum();
+                    await waitForRpc();
+                    continue;
+                }
+                message = `the connection to the Qtum node was lost during the upgrade (${message})`;
+            } else if (await descriptorWalletLoaded()) {
+                // never move an upgraded wallet that Qtum has loaded
+                recordMigrationDone(null);
+                return true;
+            }
+            await ensureLegacyWalletInPlace();
             if (!flushed && /LSNs are not reset|not completely flushed/i.test(message)) {
                 flushed = true;
-                if (await flushLegacyWallet()) continue;
+                if (await flushLegacyWallet()) {
+                    // The flushed wallet.dat no longer needs the log files (the
+                    // tool removed them). Copy it, so an upgrade interrupted from
+                    // now on starts over from this copy.
+                    try {
+                        const before = getMigration();
+                        const backup = backupLegacyWallet(walletFile(), "legacy-wallet-flushed");
+                        updateMigration({ backupDir: backup.dir, sha256: backup.sha256, originalBackupDir: before.originalBackupDir || before.backupDir });
+                        continue;
+                    } catch (copyErr) {
+                        message = `could not save a copy of the wallet: ${copyErr.message}`;
+                    }
+                }
             }
             const needsPassphrase = /passphrase/i.test(message);
-            db.set(MIGRATION_KEY, Object.assign({}, db.get(MIGRATION_KEY), {
+            updateMigration(Object.assign({
                 state: needsPassphrase ? "needs-passphrase" : "failed",
                 error: message,
                 failedAt: now(),
-            }));
+            }, needsPassphrase ? { encrypted: true } : {}));
             setStatus(needsPassphrase ? "needs-passphrase" : "failed", message);
             return false;
         }
     }
+};
+
+// Why a missing wallet file must not be replaced by a new, empty wallet
+// (null on a fresh install).
+const notAFreshInstall = () => {
+    if (walletState.get(WALLET_CREATED_KEY)) return "a wallet was created on this AVADO before";
+    if (getMigration()) return "a wallet was upgraded on this AVADO before";
+    if (walletState.get(RESTORE_KEY)) return "a wallet backup was restored on this AVADO before";
+    if (db.get("BACKUP_REQUIRED") === false) return "a wallet backup was downloaded before";
+    if (walletfiles.listDir(BACKUP_DIR).length > 0) return `copies of a wallet are in ${BACKUP_DIR}`;
+    const dir = walletfiles.walletDir(QTUM_DATA_PATH);
+    if (walletfiles.listDir(dir).some((name) => /\.legacy\.bak$/.test(name))) return `a copy of an upgraded wallet is in ${dir}`;
+    return null;
 };
 
 // Load (or on a fresh install create) the default wallet.
@@ -388,8 +580,14 @@ const ensureDefaultWalletLoaded = async () => {
     const file = walletFile();
     const kind = walletfiles.exists(file) ? walletfiles.walletFileKind(file) : "missing";
     if (kind === "missing") {
+        const reason = notAFreshInstall();
+        if (reason) {
+            // never replace a lost wallet by an empty one without telling anyone
+            throw new WalletProblem(`the wallet file ${file} is missing (${reason})`, "wallet-missing");
+        }
         log("no wallet yet - creating the default wallet");
         await rpc("createwallet", [""], { timeout: 0 });
+        walletState.set(WALLET_CREATED_KEY, now());
     } else if (kind === "sqlite") {
         log("loading the default wallet");
         await rpc("loadwallet", [""], { timeout: 0 });
@@ -401,10 +599,10 @@ const ensureDefaultWalletLoaded = async () => {
 };
 
 const finishWalletSetup = async () => {
-    let migration = db.get(MIGRATION_KEY);
+    let migration = getMigration();
     if (migration && migration.state === "pending") {
         await migrateDefaultWallet(null);
-        migration = db.get(MIGRATION_KEY);
+        migration = getMigration();
     }
     if (migration && ["failed", "needs-passphrase"].includes(migration.state)) {
         setStatus(migration.state, migration.error || "");
@@ -419,14 +617,14 @@ const prepareWalletFilesSafely = () => {
     } catch (err) {
         // e.g. no copy of the legacy wallet could be written: do not upgrade it
         log("could not prepare the wallet:", err.message);
-        db.set(MIGRATION_KEY, Object.assign({}, db.get(MIGRATION_KEY), { state: "failed", error: `could not save a copy of the wallet: ${err.message}`, failedAt: now() }));
+        updateMigration({ state: "failed", error: `could not save a copy of the wallet: ${err.message}`, failedAt: now() });
     }
 };
 
 const startupTask = async () => {
     setStatus("starting");
-    prepareWalletFilesSafely();
     await stopQtum();
+    prepareWalletFilesSafely();
     await startQtum();
     await waitForRpc();
     await finishWalletSetup();
@@ -442,15 +640,41 @@ const restartTask = async () => {
 };
 
 // Replace the default wallet with an uploaded backup. The current wallet is
-// moved to BACKUP_DIR first; a legacy backup is upgraded automatically.
+// moved to BACKUP_DIR first; a legacy backup is upgraded automatically. If the
+// backup cannot be put in place, the current wallet goes back.
 const restoreTask = async (upload) => {
     setStatus("restoring");
+    restoreResult = null;
     const file = walletFile();
     const saveDir = path.join(BACKUP_DIR, `${walletfiles.timestamp()}-before-restore`);
     await stopQtum();
-    walletSideFiles(file).forEach((f) => walletfiles.moveInto(f, saveDir));
-    walletfiles.copyFileDurable(upload, file);
-    fs.unlinkSync(upload);
+    let moving = false;
+    try {
+        walletState.set(RESTORE_KEY, { state: "running", saveDir, startedAt: now() });
+        moving = true;
+        walletSideFiles(file).forEach((f) => walletfiles.moveInto(f, saveDir));
+        walletfiles.copyFileDurable(upload, file);
+    } catch (err) {
+        log(`the backup could not be put in place: ${err.message}`);
+        if (moving) undoRestore(saveDir);
+        walletfiles.removeQuietly(upload);
+        try {
+            walletState.set(RESTORE_KEY, { state: "failed", saveDir, error: err.message, finishedAt: now() });
+        } catch (stateErr) {
+            log(`could not record the failed restore: ${stateErr.message}`);
+        }
+        restoreResult = {
+            state: "failed",
+            message: err.code === "ENOSPC" ? "There is not enough free disk space on your AVADO." : "The backup file could not be copied.",
+            at: now(),
+        };
+        await startQtum();
+        await waitForRpc();
+        await finishWalletSetup();
+        return;
+    }
+    walletState.set(RESTORE_KEY, { state: "done", saveDir, finishedAt: now() });
+    walletfiles.removeQuietly(upload);
     log(`wallet backup restored; the previous wallet was moved to ${saveDir}`);
     prepareWalletFilesSafely();
     await startQtum();
@@ -461,7 +685,7 @@ const restoreTask = async (upload) => {
 const retryMigrationTask = async (passphrase) => {
     prepareWalletFilesSafely();
     await waitForRpc();
-    const migration = db.get(MIGRATION_KEY);
+    const migration = getMigration();
     if (migration && ["pending", "failed", "needs-passphrase"].includes(migration.state)) {
         if (!(await migrateDefaultWallet(passphrase))) return;
     }
@@ -505,29 +729,37 @@ const sendError = (res, err) => {
         res.send(err.httpCode, { error: err.message });
         return;
     }
-    let message = err.message;
-    if (/not loaded|does not exist/i.test(message)) message = "Your wallet is not loaded yet. Please wait a moment and try again.";
-    else if (/walletpassphrase|unlock/i.test(message)) message = "Your wallet is locked with a password. Unlock it first.";
-    else if (/ECONNREFUSED|-28|Loading|Verifying|Rescanning/i.test(`${err.code} ${message}`)) message = "The Qtum node is still starting. Please try again in a few minutes.";
-    res.send(500, { error: message });
+    res.send(500, { error: plainMessage(err) });
 };
 
 server.get("/getenv", (req, res) => {
     res.send(200, db.JSON());
 });
 
+// Change settings. Only the settings in SETTINGS, with valid values.
 server.post("/setenv", async (req, res) => {
-    if (!req.body) {
-        res.send(400);
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        res.send(400, { error: "No settings were sent." });
         return;
+    }
+    for (const key of Object.keys(body)) {
+        const setting = SETTINGS[key];
+        if (!setting) {
+            res.send(400, { error: `${key} cannot be changed.` });
+            return;
+        }
+        if (!setting.valid(body[key])) {
+            res.send(400, { error: setting.error });
+            return;
+        }
     }
 
     let restartNeeded = false;
-    Object.keys(req.body).forEach((key) => {
-        const displayVal = (key.toString().includes("PRIVATE")) ? "(hidden)" : req.body[key]
-        console.log(`${key}=>${displayVal}`);
-        if (QTUM_CONFIG_KEYS.includes(key) && db.get(key) !== req.body[key]) restartNeeded = true;
-        db.set(key, req.body[key]);
+    Object.keys(body).forEach((key) => {
+        console.log(`${key}=>${body[key]}`);
+        if (QTUM_CONFIG_KEYS.includes(key) && db.get(key) !== body[key]) restartNeeded = true;
+        db.set(key, body[key]);
     });
 
     // only settings that go into qtum.conf need a Qtum restart
@@ -542,7 +774,7 @@ server.post("/restartQtum", async (req, res) => {
 });
 
 server.get("/walletstatus", async (req, res) => {
-    const migration = db.get(MIGRATION_KEY) || null;
+    const migration = getMigration();
     let scanning = false;
     if (importRunning()) {
         try {
@@ -554,17 +786,24 @@ server.get("/walletstatus", async (req, res) => {
     res.send(200, {
         state: walletStatus.state,
         message: walletStatus.message,
+        problem: walletStatus.problem,
         busy,
-        migration: migration ? { state: migration.state, migratedAt: migration.migratedAt || null, error: migration.error || null } : null,
-        newBackupRequired: db.get(NEW_BACKUP_KEY) === true,
+        migration: migration ? {
+            state: migration.state,
+            migratedAt: migration.migratedAt || null,
+            error: migration.error || null,
+            encrypted: !!migration.encrypted,
+        } : null,
+        newBackupRequired: walletState.get(NEW_BACKUP_KEY) === true,
         import: importStatus,
+        restore: restoreResult,
         scanning,
     });
 });
 
 // The user downloaded a wallet backup
 server.post("/backupdone", wizardOnly, async (req, res) => {
-    db.set(NEW_BACKUP_KEY, false);
+    walletState.set(NEW_BACKUP_KEY, false);
     db.set("BACKUP_REQUIRED", false);
     res.send(200, { ok: true });
 });
@@ -596,6 +835,7 @@ server.post("/importkey", wizardOnly, async (req, res) => {
         if (!qtumkeys.decodeWif(privateKey)) throw new UserError("This is not a valid Qtum private key. Please check that you copied all of it.");
         if (busy) throw new UserError(BUSY_MESSAGE, 409);
         if (importRunning()) throw new UserError("A private key is being imported already. Please wait until it is finished.", 409);
+        if (walletStatus.state !== "ready") throw new UserError("Your wallet is not ready yet, so no key can be imported now. Please try again when the message at the top of this page is gone.", 409);
         let info;
         try {
             info = await rpc("getdescriptorinfo", [`combo(${privateKey})`]);
@@ -609,10 +849,13 @@ server.post("/importkey", wizardOnly, async (req, res) => {
             .then((result) => {
                 const r = result && result[0];
                 if (r && r.success) importStatus = { state: "done", finishedAt: now() };
-                else importStatus = { state: "failed", message: (r && r.error && r.error.message) || "The key could not be imported." };
+                else importStatus = { state: "failed", message: r && r.error ? plainMessage(r.error) : "The key could not be imported." };
             })
             .catch((err) => {
-                importStatus = { state: "failed", message: err.message };
+                const message = err instanceof RpcError
+                    ? plainMessage(err)
+                    : "The import stopped because the Qtum node restarted. Please import the key again.";
+                importStatus = { state: "failed", message };
             })
             .then(() => {
                 log(`private key import ${importStatus.state}${importStatus.message ? `: ${importStatus.message}` : ""}`);
@@ -644,7 +887,7 @@ server.post("/restore", wizardOnly, async (req, res) => {
 // Retry the wallet upgrade, optionally with the wallet password
 server.post("/migrate", wizardOnly, async (req, res) => {
     try {
-        const migration = db.get(MIGRATION_KEY);
+        const migration = getMigration();
         if (!migration || !["pending", "failed", "needs-passphrase"].includes(migration.state)) {
             throw new UserError("There is no wallet upgrade to retry.");
         }
