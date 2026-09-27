@@ -71,7 +71,9 @@ RUN set -ex \
     && echo "${QTUM_SHA256}  /tmp/${QTUM_DIST}" | sha256sum -c - \
     && tar -xzf "/tmp/$QTUM_DIST" -C /usr/local --strip-components=1 \
     && rm "/tmp/$QTUM_DIST" \
-    && qtumd -version | head -n1 | grep -F "${VERSION}."
+    && case "$VERSION" in v*.*.*) want="$VERSION" ;; *) want="$VERSION.0" ;; esac \
+    && line="$(qtumd -version | head -n1)" \
+    && case "$line " in *" $want "*) ;; *) echo "qtumd says '$line', expected $want" >&2; exit 1 ;; esac
 
 RUN set -ex \
     && QTUM_DIST="qtum-${QTUM_LEGACY_VERSION#v}-x86_64-linux-gnu.tar.gz" \
