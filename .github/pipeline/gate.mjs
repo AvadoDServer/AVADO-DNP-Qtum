@@ -137,8 +137,18 @@ export function logExcerpt(log) {
   const lines = String(log || '')
     .split('\n')
     .map((l) => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z ?/, '').replace(/\x1b\[[0-9;]*m/g, '').replace(/\r$/, ''));
-  const firstError = lines.findIndex((l) => l.startsWith('##[error]'));
-  const upto = firstError === -1 ? lines : lines.slice(0, firstError + 1);
+  // Only the step that failed: from the last "##[group]Run ..." before the first error.
+  const errorAt = lines.findIndex((l) => l.startsWith('##[error]'));
+  const stepAt = errorAt === -1 ? 0 : lines.slice(0, errorAt).map((l) => l.startsWith('##[group]Run ')).lastIndexOf(true);
+  // GitHub echoes each step's script between "##[group]Run ..." and "##[endgroup]": not output.
+  let inRun = false;
+  const output = lines.slice(Math.max(stepAt, 0)).filter((l) => {
+    if (l.startsWith('##[group]Run ')) { inRun = true; return false; }
+    if (inRun && l.startsWith('##[endgroup]')) { inRun = false; return false; }
+    return !inRun;
+  });
+  const firstError = output.findIndex((l) => l.startsWith('##[error]'));
+  const upto = firstError === -1 ? output : output.slice(0, firstError + 1);
   const noise = /^(##\[(group|endgroup)\]|shell: |env:$|\s+[A-Z_]+: |\[command\]|Post job cleanup|Cleaning up orphan)/;
   const useful = upto.filter((l) => l.trim() && !noise.test(l));
   const key = useful.filter((l) => /(^|\s)FAIL\b|FAIL:|MISSING|MISMATCH|^##\[error\]|^-{5} |^ {4}[-+]|\bError: |rc=[1-9]/.test(l)).slice(0, 30);

@@ -264,7 +264,12 @@ test('the bump edits only the version lines of the real files', () => {
 
 test('the issue shows the failing lines of a job log, not setup or cleanup noise', () => {
   const log = [
+    '2026-09-26T22:10:19.0Z ##[group]Run if [ -f hold ]; then',
+    '2026-09-26T22:10:19.0Z \x1b[36;1m  reason=$(sed -n 1p hold)\x1b[0m',
+    '2026-09-26T22:10:19.0Z ##[endgroup]',
+    '2026-09-26T22:10:19.0Z Not held.',
     '2026-09-26T22:10:19.1Z ##[group]Run scripts/ci/legacy-wallet-test.sh',
+    '2026-09-26T22:10:19.1Z ##[endgroup]',
     '2026-09-26T22:10:19.2Z   PASS  A-made-legacy                  Qtum 22.1 made a legacy (Berkeley DB) wallet',
     '2026-09-26T22:10:19.3Z   FAIL  A-keys                         2 of 13 keys differ or are missing: Qabc Qdef',
     '2026-09-26T22:10:19.7Z \x1b[36;1mshell: /usr/bin/bash -e {0}\x1b[0m',
@@ -275,7 +280,9 @@ test('the issue shows the failing lines of a job log, not setup or cleanup noise
   const x = logExcerpt(log);
   assert.match(x, /FAIL {2}A-keys/);
   assert.match(x, /##\[error\]/);
-  assert.doesNotMatch(x, /Post job|\[command\]|\x1b|shell: /);
+  assert.doesNotMatch(x, /Post job|\[command\]|\x1b|shell: |reason=\$/, 'no echoed step scripts');
+  assert.doesNotMatch(x, /Not held\./, 'only the failing step, not the steps before it');
+  assert.match(x, /PASS {2}A-made-legacy/, 'the failing step\'s own output stays');
 });
 
 test('the bump PR marker names its Qtum release (closing the PR skips that release)', () => {
