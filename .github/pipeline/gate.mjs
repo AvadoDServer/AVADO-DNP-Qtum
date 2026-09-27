@@ -245,7 +245,7 @@ function issueText({ repo, pr, target, mainQtum, decision, checks, failed, runUr
 - Never weaken the wallet safety in build/monitor: a wallet is never deleted or replaced by an empty one, every private key must stay exportable.
 - Do not edit .github/**, scripts/**, test/** (the checks), hold or releases.json. If the fix really needs that, make the change in a separate commit, say so clearly, and tell me that I must review and merge the PR myself: the gate never merges such a PR by itself.
 - Before pushing, run the checks that failed locally (README.md, section "Checks"): build the image, then for example scripts/ci/check-flags.sh, test/smoke-test.sh and scripts/ci/legacy-wallet-test.sh.
-- Commit with a clear message and push to ${BOT_BRANCH}. Do not merge the PR yourself: the checks run again and the gate merges when they are green.`;
+- Commit with a clear message and push to ${BOT_BRANCH}. Do not merge the PR yourself: ${decision.cause === 'major' ? 'the checks run again, and I merge a new major version myself after reading your summary.' : 'the checks run again and the gate merges when they are green.'}`;
 
   let what = '';
   let prompt = '';
