@@ -1,6 +1,8 @@
 import axios from "axios";
 
-const baseUrl = "http://qtum.my.ava.do/monitor"
+// Same address the wizard was opened at: nginx only accepts calls that change
+// something from the wizard's own page
+const baseUrl = "/monitor";
 
 // Required by the monitor for calls that touch keys or replace the wallet
 const wizardHeaders = { headers: { "X-Qtum-Wizard": "1" } };

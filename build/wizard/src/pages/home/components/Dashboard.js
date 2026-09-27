@@ -19,7 +19,9 @@ const Comp = () => {
     const [backupRequired, setBackupRequired] = React.useState(undefined);
     const [backupRequiredClockTick, setBackupRequiredClockTick] = React.useState(0);
 
-    const rpcClient = new Client(new RequestManager([new HTTPTransport("http://qtum.my.ava.do/rpc")]));
+    // Same address the wizard was opened at: nginx only accepts /rpc calls
+    // from the wizard's own page
+    const rpcClient = new Client(new RequestManager([new HTTPTransport(`${window.location.origin}/rpc`)]));
 
     React.useEffect(() => {
         const timer = setInterval(() => {

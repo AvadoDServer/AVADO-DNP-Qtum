@@ -7,7 +7,8 @@
 # with EXTRA_OPTS="-regtest -rpcport=3889", then calls every RPC the wizard
 # uses through nginx /rpc and the monitor endpoints the wizard uses. A new Qtum
 # release can remove RPCs (v30 removed dumpprivkey and importprivkey), which
-# the build-time `qtumd -version` check does not notice; this does.
+# the build-time `qtumd -version` check does not notice; this does. It also
+# checks that other web sites cannot use /rpc or change anything in the monitor.
 # Exits non-zero on the first failure and removes its container and volume.
 set -eu
 IMAGE=${1:?usage: $0 <image>}
@@ -69,4 +70,31 @@ code=$(docker exec "$NAME" curl -s -o /dev/null -w '%{http_code}' -X POST http:/
 echo "ok   key endpoints refuse requests without the wizard header"
 monitor POST backupdone '{}' | grep -q '"ok":true' || fail "monitor backupdone"
 echo "ok   monitor backupdone"
+
+# Browsers send an Origin header. /rpc (it adds the RPC password) and the
+# monitor calls that change something only accept the wizard's own page;
+# reading the monitor stays open to other pages.
+from() { # origin method path [json]: status line and CORS header of the answer
+    docker exec "$NAME" curl -s -o /dev/null -D - -X "$2" "http://127.0.0.1$3" -H 'Host: qtum.my.ava.do' \
+        -H "Origin: $1" -H 'Content-Type: application/json' ${4:+-d "$4"} | tr -d '\r' | grep -iE '^HTTP/|^access-control-allow-origin' | tr '\n' ' '
+}
+getblockcount='{"jsonrpc":"1.0","id":"smoke","method":"getblockcount","params":[]}'
+fee='{"DELEGATION_FEE_PERCENT":10}'
+check() { # expected-status expected-cors(yes|no) answer description
+    echo "$3" | grep -q " $1 " || fail "$4: expected HTTP $1, got: $3"
+    if [ "$2" = yes ]; then
+        echo "$3" | grep -qi 'access-control-allow-origin: \*' || fail "$4: no CORS header: $3"
+    elif echo "$3" | grep -qi 'access-control-allow-origin'; then
+        fail "$4: unexpected CORS header: $3"
+    fi
+    echo "ok   $4"
+}
+check 200 no "$(from http://qtum.my.ava.do POST /rpc "$getblockcount")" "/rpc from the wizard's own page"
+check 403 no "$(from http://evil.example POST /rpc "$getblockcount")" "/rpc from another web site is refused"
+check 403 no "$(from null POST /rpc "$getblockcount")" "/rpc from a sandboxed page (Origin null) is refused"
+check 403 no "$(from http://evil.example OPTIONS /rpc)" "/rpc preflight from another web site is refused"
+check 403 no "$(from http://evil.example POST /monitor/setenv "$fee")" "monitor setenv from another web site is refused"
+check 403 no "$(from http://evil.example POST /monitor/restartQtum)" "monitor restartQtum from another web site is refused"
+check 200 no "$(from http://qtum.my.ava.do POST /monitor/setenv "$fee")" "monitor setenv from the wizard's own page"
+check 200 yes "$(from http://evil.example GET /monitor/walletstatus)" "monitor walletstatus stays readable from other pages"
 echo "PASS"
