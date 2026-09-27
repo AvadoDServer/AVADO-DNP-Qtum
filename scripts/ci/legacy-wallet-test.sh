@@ -288,7 +288,9 @@ scenario_a() {
   local code
   code=$(docker inspect -f '{{.State.ExitCode}}' "$C3")
   logs_of "$C3" "$C3"
-  pass_if "$([ "$code" = 0 ] && grep -q 'Shutdown: done' "$OUT/$C3.log" && echo 0 || echo 1)" A-clean-stop "docker stop: qtumd shut down cleanly (exit code 0)" "docker stop: exit code $code, $(grep -c 'Shutdown: done' "$OUT/$C3.log") 'Shutdown: done' lines"
+  # "Shutdown done" (v30) or "Shutdown: done" (older), and supervisord saw qtumd exit 0
+  pass_if "$([ "$code" = 0 ] && grep -Eq 'Shutdown:? done' "$OUT/$C3.log" && grep -q 'stopped: qtum (exit status 0)' "$OUT/$C3.log" && echo 0 || echo 1)" A-clean-stop \
+    "docker stop: qtumd shut down cleanly (exit status 0)" "docker stop: container exit code $code; $(grep -Ec 'Shutdown:? done' "$OUT/$C3.log") 'Shutdown done' lines; $(grep -E 'stopped: qtum|exited: qtum' "$OUT/$C3.log" | tail -1)"
   docker rm "$C3" >/dev/null 2>&1
 }
 

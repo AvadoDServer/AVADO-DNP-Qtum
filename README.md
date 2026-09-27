@@ -80,7 +80,7 @@ DAppNode's real node: the 72-hour wait with our checks green takes its place.
      wallet is kept, a restart does not upgrade again, and the chain data the
      older version wrote opens without a reindex;
    - the package **boots on Qtum mainnet** with its real command line: the
-     wallet of a new box is made, it finds peers, the header sync moves, every
+     wallet of a new box is made, it finds a peer, the header sync moves, every
      published port has a listener, and `docker stop` stops qtumd cleanly;
    - the package name, volume, ports and settings names are the same as on
      the default branch and in production, the version goes up, and Qtum

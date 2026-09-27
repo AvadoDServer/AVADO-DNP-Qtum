@@ -13,7 +13,9 @@
 #   - qtumd answers RPC calls and runs the main chain, directly and through the
 #     wizard's /rpc; the monitor made the wallet of a new box (state "ready"),
 #     and the wizard and the monitor answer through nginx,
-#   - it had at least BOOT_MIN_PEERS peers (default 2),
+#   - it had at least BOOT_MIN_PEERS peers (default 1: Qtum mainnet is small and
+#     a GitHub runner accepts no inbound connections; the first dry run saw 2
+#     peers in 8 minutes. The header sync moving is the real proof of P2P),
 #   - the header sync moved forward by at least BOOT_MIN_PROGRESS headers
 #     (default 1000): Qtum first "pre-synchronizes" the headers (its log line
 #     "Pre-synchronizing blockheaders, height: N" and getpeerinfo's
@@ -36,7 +38,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 MANIFEST=${3:-$ROOT/dappnode_package.json}
 READY_MIN=${BOOT_READY_MINUTES:-10}
 WATCH_MIN=${BOOT_MINUTES:-8}
-MIN_PEERS=${BOOT_MIN_PEERS:-2}
+MIN_PEERS=${BOOT_MIN_PEERS:-1}
 MIN_PROGRESS=${BOOT_MIN_PROGRESS:-1000}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
@@ -141,7 +143,8 @@ if running; then
 fi
 docker logs "$C" >"$OUT/container.log" 2>&1
 docker run --rm -v "$VOL:/d:ro" --entrypoint cat "$IMAGE" /d/qtum/debug.log >"$OUT/debug.log" 2>/dev/null
-grep -q 'Shutdown: done' "$OUT/container.log" && [ "$exit_code" = 0 ] && stopped_clean=yes
+# "Shutdown done" (v30) or "Shutdown: done" (older), and supervisord saw qtumd exit 0
+grep -Eq 'Shutdown:? done' "$OUT/container.log" && grep -q 'stopped: qtum (exit status 0)' "$OUT/container.log" && [ "$exit_code" = 0 ] && stopped_clean=yes
 
 # --- verdict ------------------------------------------------------------------------
 fails=0
@@ -203,9 +206,9 @@ else
   check FAIL ports "published port(s)$unserved have no listener (listening: ${listening% }); did Qtum change its default P2P or RPC port?"
 fi
 if [ "$stopped_clean" = yes ]; then
-  check PASS stop "docker stop: qtumd shut down cleanly within 180 s (exit code 0)"
+  check PASS stop "docker stop: qtumd shut down cleanly within 180 s (exit status 0)"
 else
-  check FAIL stop "docker stop: exit code ${exit_code:-?}, 'Shutdown: done' logged: $(grep -c 'Shutdown: done' "$OUT/container.log")"
+  check FAIL stop "docker stop: container exit code ${exit_code:-?}; 'Shutdown done' logged: $(grep -Ec 'Shutdown:? done' "$OUT/container.log"); $(grep -E 'stopped: qtum|exited: qtum' "$OUT/container.log" | tail -1)"
 fi
 check INFO version "$(jq -r '.subversion // "?"' "$OUT/networkinfo.json" 2>/dev/null), protocol $(jq -r '.protocolversion // "?"' "$OUT/networkinfo.json" 2>/dev/null)"
 check INFO peer-versions "$(jq -r '.subver' "$OUT/peers.jsonl" 2>/dev/null | sort | uniq -c | sort -rn | head -4 | awk '{c=$1; $1=""; printf "%s x%s,", $0, c}' | sed 's/,$//')"
