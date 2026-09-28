@@ -1,14 +1,16 @@
 #!/bin/bash
 # Smoke test for a built Qtum package image, on regtest (no network, about 2 minutes).
 #
-#   test/smoke-test.sh qtum.avado.dnp.dappnode.eth:0.0.14
+#   test/smoke-test.sh qtum.avado.dnp.dappnode.eth:0.0.15
 #
 # Boots the image the way the package runs it (supervisord, monitor, nginx),
 # with EXTRA_OPTS="-regtest -rpcport=3889", then calls every RPC the wizard
 # uses through nginx /rpc and the monitor endpoints the wizard uses. A new Qtum
 # release can remove RPCs (v30 removed dumpprivkey and importprivkey), which
 # the build-time `qtumd -version` check does not notice; this does. It also
-# checks that other web sites cannot use /rpc or change anything in the monitor.
+# checks that other web sites cannot use /rpc or change anything in the monitor,
+# and which page each address opens: the wizard on http and https, the Qtum
+# Web Wallet on https port 8443.
 # Exits non-zero on the first failure and removes its container and volume.
 set -eu
 IMAGE=${1:?usage: $0 <image>}
@@ -71,12 +73,39 @@ echo "ok   key endpoints refuse requests without the wizard header"
 monitor POST backupdone '{}' | grep -q '"ok":true' || fail "monitor backupdone"
 echo "ok   monitor backupdone"
 
-# Browsers send an Origin header. /rpc (it adds the RPC password) and the
-# monitor calls that change something only accept the wizard's own page;
-# reading the monitor stays open to other pages.
-from() { # origin method path [json]: status line and CORS header of the answer
-    docker exec "$NAME" curl -s -o /dev/null -D - -X "$2" "http://127.0.0.1$3" -H 'Host: qtum.my.ava.do' \
-        -H "Origin: $1" -H 'Content-Type: application/json' ${4:+-d "$4"} | tr -d '\r' | grep -iE '^HTTP/|^access-control-allow-origin' | tr '\n' ' '
+# Inside the container, qtum.my.ava.do is the container itself, as on the box
+# (the certificate is the *.my.ava.do one, so curl gets the right name).
+curlq() {
+    docker exec "$NAME" curl -sk --resolve qtum.my.ava.do:80:127.0.0.1 \
+        --resolve qtum.my.ava.do:443:127.0.0.1 --resolve qtum.my.ava.do:8443:127.0.0.1 "$@"
+}
+
+# Which page each address opens. The Qtum Web Wallet was on https port 443
+# until 0.0.14; now qtum.my.ava.do is the wizard on http and https (browsers
+# open https when you type the address), and the Web Wallet is on port 8443.
+title() { curlq "$1" | grep -o '<title>[^<]*</title>' || true; }
+opens() { # url expected-title description
+    [ "$(title "$1")" = "<title>$2</title>" ] || fail "$1 opens \"$(title "$1")\", not $2"
+    echo "ok   $3"
+}
+opens http://qtum.my.ava.do/ "AVADO - Wizard" "http://qtum.my.ava.do opens the wizard"
+opens https://qtum.my.ava.do/ "AVADO - Wizard" "https://qtum.my.ava.do opens the wizard"
+opens https://qtum.my.ava.do:8443/ "Qtum Web Wallet" "https://qtum.my.ava.do:8443 opens the Qtum Web Wallet"
+script=$(curlq https://qtum.my.ava.do:8443/ | grep -o 'src="/js/app[^"]*"' | head -n1 | cut -d'"' -f2)
+[ -n "$script" ] && [ "$(curlq -o /dev/null -w '%{http_code}' "https://qtum.my.ava.do:8443$script")" = 200 ] \
+    || fail "the Qtum Web Wallet's script $script does not load"
+echo "ok   the Qtum Web Wallet's scripts load"
+answer=$(curlq -o /dev/null -w '%{http_code} %{redirect_url}' http://qtum.my.ava.do:8443/)
+[ "$answer" = "301 https://qtum.my.ava.do:8443/" ] || fail "http://qtum.my.ava.do:8443 answered: $answer"
+echo "ok   http://qtum.my.ava.do:8443 goes to https"
+
+# Browsers send an Origin header. /rpc (it adds the RPC password), /ws (the
+# connection to the AVADO) and the monitor calls that change something only
+# accept the wizard's own page, over the scheme it was opened with; reading
+# the monitor stays open to other pages.
+from() { # origin method url [json]: status line and CORS header of the answer
+    curlq -o /dev/null -D - -X "$2" "$3" -H "Origin: $1" -H 'Content-Type: application/json' ${4:+-d "$4"} \
+        | tr -d '\r' | grep -iE '^HTTP/|^access-control-allow-origin' | tr '\n' ' '
 }
 getblockcount='{"jsonrpc":"1.0","id":"smoke","method":"getblockcount","params":[]}'
 fee='{"DELEGATION_FEE_PERCENT":10}'
@@ -89,12 +118,24 @@ check() { # expected-status expected-cors(yes|no) answer description
     fi
     echo "ok   $4"
 }
-check 200 no "$(from http://qtum.my.ava.do POST /rpc "$getblockcount")" "/rpc from the wizard's own page"
-check 403 no "$(from http://evil.example POST /rpc "$getblockcount")" "/rpc from another web site is refused"
-check 403 no "$(from null POST /rpc "$getblockcount")" "/rpc from a sandboxed page (Origin null) is refused"
-check 403 no "$(from http://evil.example OPTIONS /rpc)" "/rpc preflight from another web site is refused"
-check 403 no "$(from http://evil.example POST /monitor/setenv "$fee")" "monitor setenv from another web site is refused"
-check 403 no "$(from http://evil.example POST /monitor/restartQtum)" "monitor restartQtum from another web site is refused"
-check 200 no "$(from http://qtum.my.ava.do POST /monitor/setenv "$fee")" "monitor setenv from the wizard's own page"
-check 200 yes "$(from http://evil.example GET /monitor/walletstatus)" "monitor walletstatus stays readable from other pages"
+for wizard in http://qtum.my.ava.do https://qtum.my.ava.do; do
+    over=${wizard%%:*}
+    check 200 no "$(from $wizard POST $wizard/rpc "$getblockcount")" "$over: /rpc from the wizard's own page"
+    check 403 no "$(from $over://evil.example POST $wizard/rpc "$getblockcount")" "$over: /rpc from another web site is refused"
+    check 403 no "$(from null POST $wizard/rpc "$getblockcount")" "$over: /rpc from a sandboxed page (Origin null) is refused"
+    check 403 no "$(from $over://evil.example OPTIONS $wizard/rpc)" "$over: /rpc preflight from another web site is refused"
+    check 403 no "$(from https://qtum.my.ava.do:8443 POST $wizard/rpc "$getblockcount")" "$over: /rpc from the Qtum Web Wallet's page is refused"
+    check 403 no "$(from $over://evil.example POST $wizard/monitor/setenv "$fee")" "$over: monitor setenv from another web site is refused"
+    check 403 no "$(from $over://evil.example POST $wizard/monitor/restartQtum)" "$over: monitor restartQtum from another web site is refused"
+    check 200 no "$(from $wizard POST $wizard/monitor/setenv "$fee")" "$over: monitor setenv from the wizard's own page"
+    check 200 yes "$(from $over://evil.example GET $wizard/monitor/walletstatus)" "$over: monitor walletstatus stays readable from other pages"
+    check 403 no "$(from $over://evil.example GET $wizard/ws)" "$over: /ws (the connection to the AVADO) from another web site is refused"
+done
+# the page opened over one scheme cannot use the other one
+check 403 no "$(from http://qtum.my.ava.do POST https://qtum.my.ava.do/rpc "$getblockcount")" "/rpc over https from the http page is refused"
+check 403 no "$(from https://qtum.my.ava.do POST http://qtum.my.ava.do/rpc "$getblockcount")" "/rpc over http from the https page is refused"
+# the Web Wallet's address serves only the Web Wallet's files
+curlq -X POST https://qtum.my.ava.do:8443/rpc -H 'Content-Type: application/json' -d "$getblockcount" | grep -q '"result"' \
+    && fail "https://qtum.my.ava.do:8443/rpc answers RPC calls"
+echo "ok   the Qtum Web Wallet's address has no /rpc"
 echo "PASS"
