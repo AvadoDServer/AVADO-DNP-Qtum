@@ -131,4 +131,21 @@ it("tells when the rebuild failed, and what was not carried over after a rebuild
     }));
     expect(container.textContent).toContain("Your wallet was rebuilt in the new Qtum wallet format.");
     expect(container.textContent).toContain("1 watch-only address");
+    expect(container.textContent).not.toContain("damaged");
+});
+
+it("says so when the old wallet file was damaged and read directly", async () => {
+    const rebuilt = Object.assign({}, failedUpgrade, {
+        state: "ready",
+        newBackupRequired: true,
+        migration: { state: "done", method: "rebuild", encrypted: false, canRebuild: false },
+        rebuild: { state: "done", step: null, progress: null, error: null, notCarriedOver: "", source: "raw-pages", seedRestored: true },
+    });
+    await render(rebuilt);
+    expect(container.textContent).toContain("The old wallet file was damaged; the keys that could be read were carried over and all addresses from its seed were restored.");
+
+    ReactDOM.unmountComponentAtNode(container);
+    await render(Object.assign({}, rebuilt, { rebuild: Object.assign({}, rebuilt.rebuild, { seedRestored: false }) }));
+    expect(container.textContent).toContain("The old wallet file was damaged; the keys that could be read were carried over.");
+    expect(container.textContent).not.toContain("from its seed");
 });

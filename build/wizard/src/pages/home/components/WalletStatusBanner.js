@@ -186,6 +186,11 @@ const Comp = ({ rpcClient, session }) => {
             <>
                 <p><b>Your wallet was {rebuilt ? "rebuilt in" : "upgraded to"} the new Qtum wallet format.</b> Please download a fresh backup now and keep it
                     somewhere safe. Backups made before the {rebuilt ? "rebuild" : "upgrade"} do not include the new wallet format.</p>
+                {rebuilt && status.rebuild && status.rebuild.source === "raw-pages" && (
+                    <p style={{ marginTop: 10 }}>{status.rebuild.seedRestored
+                        ? "The old wallet file was damaged; the keys that could be read were carried over and all addresses from its seed were restored."
+                        : "The old wallet file was damaged; the keys that could be read were carried over."}</p>
+                )}
                 {notCarriedOver && <p style={{ marginTop: 10 }}>{notCarriedOver}</p>}
                 {encrypted && <p style={{ marginTop: 10 }}>{lockedNote}</p>}
                 <div style={{ marginTop: 10 }}>

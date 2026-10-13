@@ -17,7 +17,9 @@
 #    (drop-one-key), a rebuild interrupted by a container restart, a new
 #    wallet that cannot be closed (unload-fails), a stop in the middle of the
 #    final swap (crash-during-swap, crash-during-swap-partial), a wallet in
-#    place that is not the saved copy, and a saved copy that is gone.
+#    place that is not the saved copy, a saved copy that is gone, and a
+#    wallet file cut short (a real migratewallet failure; the wallet tool
+#    cannot dump it, so the rebuild reads its pages directly).
 # Exits non-zero on the first failure and removes its containers and volumes.
 set -euo pipefail
 IMAGE=${1:?usage: $0 <image>}
@@ -290,6 +292,28 @@ for f in wallet.dat database db.log .walletlock README.txt; do
     in_box "ls -d /package/data/qtum/regtest/wallets/legacy-wallet-replaced-*/$f" >/dev/null || fail "partial swap: $f is not in the kept directory"
 done
 echo "ok   partial swap: only the new wallet in the wallet folder, every old wallet file kept"
+stop
+
+echo "--- a wallet file cut short: the upgrade fails for real, the rebuild reads the pages directly"
+mkdir -p "$WORK/regtest/wallets/hd-plain-cut"
+node "$HERE/../build/monitor/test/fixtures/truncate.js" "$WORK/regtest/wallets/hd-plain/wallet.dat" "$OUT/hd-plain.truth.json" \
+    "$WORK/regtest/wallets/hd-plain-cut/wallet.dat" > "$OUT/cut.json" || fail "could not cut the wallet"
+echo "     kept $(jq .cut "$OUT/cut.json") of $(jq .pages "$OUT/cut.json") pages, $(jq .keysRead "$OUT/cut.json") of $(jq '.keys | length' "$OUT/hd-plain.truth.json") key records"
+# every address is recoverable (surviving keys or derived from the seed), so the whole balance must come back
+[ "$(jq .all "$OUT/cut.json")" = true ] || fail "cut: not every address is recoverable: $(jq -c . "$OUT/cut.json")"
+[ "$(jq .keysRead "$OUT/cut.json")" -lt "$(jq '.keys | length' "$OUT/hd-plain.truth.json")" ] || fail "cut: no key record was lost"
+start hd-plain-cut ""
+wait_state failed 300
+LEGACY_SHA=$(legacy_sha)
+log_has 'wallet upgrade failed' || fail "cut: the real upgrade did not fail"
+rebuild_ok hd-plain
+log_has 'the wallet tool cannot read the old wallet, reading it directly' || fail "cut: the rebuild did not read the pages directly"
+[ "$(status | jq -r .rebuild.source)" = raw-pages ] || fail "cut: walletstatus does not report the direct read"
+[ "$(status | jq -r .rebuild.seedRestored)" = true ] || fail "cut: the seed was not restored"
+in_box 'grep -q "\"source\": \"raw-pages\"" /package/data/wallet-state.json && grep -q "\"pagesMissing\": [1-9]" /package/data/wallet-state.json' \
+    || fail "cut: the report for support has no source/pagesMissing"
+echo "ok   cut: real upgrade failure, read directly, every address and the whole balance restored"
+no_secrets_in_log hd-plain
 stop
 
 echo "PASS"

@@ -1080,9 +1080,21 @@ const rebuildWalletTask = async (passphrase) => {
     // 1. read every key of the copy
     setRebuildStep("Reading the old wallet");
     let wallet;
+    let parsed;
     try {
-        const parsed = await legacywallet.parseDumpFile(await dumpLegacyWallet(backupDir, tmpDir));
-        wallet = legacywallet.readLegacyWallet(parsed.records, passphrase, parsed.counts);
+        try {
+            parsed = await legacywallet.parseDumpFile(await dumpLegacyWallet(backupDir, tmpDir));
+        } catch (err) {
+            // A damaged file (e.g. cut short) that Berkeley DB refuses: read the
+            // pages that are there directly, from the saved copy (read only).
+            const toolFailed = err instanceof RebuildError
+                || (err instanceof legacywallet.LegacyWalletError && err.code === "bad-dump");
+            if (!toolFailed) throw err;
+            log("the wallet tool cannot read the old wallet, reading it directly");
+            parsed = legacywallet.readWalletFile(path.join(backupDir, "wallet.dat"));
+            log(`wallet rebuild: read directly: ${parsed.pages.pagesPresent} pages present, ${parsed.pages.pagesMissing} missing, ${parsed.pages.damagedPages} damaged pages, ${parsed.pages.damagedItems} damaged records`);
+        }
+        wallet = legacywallet.readLegacyWallet(parsed.records, passphrase, parsed.counts, { damaged: parsed.source === "raw-pages" });
     } catch (err) {
         if (err instanceof legacywallet.LegacyWalletError && err.code === "needs-passphrase") {
             updateRebuild({ state: "needs-passphrase", finishedAt: now() });
@@ -1097,8 +1109,8 @@ const rebuildWalletTask = async (passphrase) => {
     }
     const chain = await chainName();
     const descriptors = legacywallet.buildDescriptors(wallet, chain);
-    const report = legacywallet.summary(wallet, descriptors);
-    log(`wallet rebuild: the old wallet has ${report.keys} keys (${report.hdKeys} from ${report.seeds} HD seeds, ${report.individualKeys} on their own), ${report.labels} labels; record counts ${JSON.stringify(report.counts)}`);
+    const report = legacywallet.summary(wallet, descriptors, parsed);
+    log(`wallet rebuild: read from ${report.source}; the old wallet has ${report.keys} keys (${report.hdKeys} from ${report.seeds} HD seeds, ${report.individualKeys} on their own), ${report.labels} labels; record counts ${JSON.stringify(report.counts)}`);
     if (await testHook("drop-one-key")) {
         const i = descriptors.map((d) => !d.range && !d.active).lastIndexOf(true);
         descriptors.splice(i >= 0 ? i : descriptors.length - 1, 1);
@@ -1341,6 +1353,9 @@ server.get("/walletstatus", async (req, res) => {
             progress: rebuildProgress ? rebuildProgress.progress : null,
             error: rebuild.error || null,
             notCarriedOver: (rebuild.result && rebuild.result.notCarriedOver) || "",
+            // "raw-pages": the old wallet file was damaged and read directly
+            source: (rebuild.result && rebuild.result.report && rebuild.result.report.source) || null,
+            seedRestored: !!(rebuild.result && rebuild.result.report && rebuild.result.report.hd),
         } : null,
         newBackupRequired: walletState.get(NEW_BACKUP_KEY) === true,
         import: importStatus,
