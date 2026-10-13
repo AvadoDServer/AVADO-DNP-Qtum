@@ -1457,7 +1457,13 @@ server.post("/restore", wizardOnly, async (req, res) => {
             fs.unlinkSync(upload);
             throw new UserError("This file is not a Qtum wallet backup.");
         }
-        runTask("restoring", () => restoreTask(upload));
+        try {
+            runTask("restoring", () => restoreTask(upload));
+        } catch (busyErr) {
+            // refused (the wallet is busy): do not leave the uploaded wallet behind
+            walletfiles.removeQuietly(upload);
+            throw busyErr;
+        }
         res.send(202, { started: true });
     } catch (err) {
         sendError(res, err);
@@ -1499,7 +1505,8 @@ server.post("/rebuild", wizardOnly, async (req, res) => {
 });
 
 // Staking rewards (read only): totals from the wallet's transactions,
-// computed at most once a minute. Only for the wizard's own page: the
+// computed again when the wallet has a new transaction (or every 10
+// minutes). Only for the wizard's own page: the
 // amounts are the owner's business.
 const stakingSummary = stakingsummary.createStakingSummary({ rpc });
 server.get("/staking-summary", wizardOnly, async (req, res) => {
@@ -1529,6 +1536,9 @@ const BACKUP_DOWNLOAD_NAME = () => `qtum-wallet-${new Date().toISOString().slice
 server.post("/backup", wizardOnly, async (req, res) => {
     let dir = null;
     try {
+        // not while the wallet is being upgraded, rebuilt or restored: the
+        // backup could be of a wallet that is about to be replaced
+        if (busy || importRunning()) throw new UserError(BUSY_MESSAGE, 409);
         dir = fs.mkdtempSync(path.join(os.tmpdir(), "qtum-wallet-download-"));
         const file = path.join(dir, "wallet.backup");
         await rpc("backupwallet", [file], { wallet: true, timeout: 120000 });
@@ -1586,18 +1596,25 @@ const readUpload = (req, max) => new Promise((resolve, reject) => {
     });
 });
 server.post("/uploadbackup", wizardOnly, async (req, res) => {
+    let tmp = null;
     try {
+        // only the file itself: any other body would be read as text by restify
+        if (req.contentType() !== "application/octet-stream") throw new UserError("The backup file was not sent as a file. Please try again.", 415);
         if (busy || importRunning()) throw new UserError(BUSY_MESSAGE, 409);
         const body = await readUpload(req, MAX_UPLOAD_BYTES);
         if (body.length === 0) throw new UserError("No file was sent. Please choose your wallet backup file again.");
         fs.mkdirSync(RESTORE_DIR, { recursive: true });
         const target = path.join(RESTORE_DIR, UPLOAD_NAME);
-        const tmp = `${target}.${crypto.randomBytes(6).toString("hex")}.part`;
+        tmp = `${target}.${crypto.randomBytes(6).toString("hex")}.part`;
         fs.writeFileSync(tmp, body, { mode: 0o600 });
+        // a restore may have started while the file arrived: never replace its file
+        if (busy || importRunning()) throw new UserError(BUSY_MESSAGE, 409);
         fs.renameSync(tmp, target);
+        tmp = null;
         log(`wallet backup uploaded (${body.length} bytes)`);
         res.send(200, { file: UPLOAD_NAME });
     } catch (err) {
+        if (tmp) walletfiles.removeQuietly(tmp);
         sendError(res, err instanceof UserError ? err : new Error(err.code === "ENOSPC" ? "There is not enough free disk space on your AVADO." : "The file could not be uploaded. Please try again."));
     }
 });
