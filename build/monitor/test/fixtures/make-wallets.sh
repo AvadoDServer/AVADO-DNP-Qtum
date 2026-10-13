@@ -15,7 +15,8 @@ NONHD_WIF_2=$4
 NONHD_WIF_3_UNCOMPRESSED=$5
 ENC_PASSPHRASE=$6
 
-qtumd -regtest -datadir=$D -daemon -keypool=20 -fallbackfee=0.001 -txindex=0 -printtoconsole=0
+# -addrindex and -logevents: the package runs qtumd with -superstaking, which needs both
+qtumd -regtest -datadir=$D -daemon -keypool=20 -fallbackfee=0.001 -addrindex=1 -logevents=1 -printtoconsole=0
 for i in $(seq 1 60); do $CLI getblockchaininfo >/dev/null 2>&1 && break; sleep 1; done
 
 w() { name=$1; shift; $CLI -rpcwallet="$name" "$@"; }

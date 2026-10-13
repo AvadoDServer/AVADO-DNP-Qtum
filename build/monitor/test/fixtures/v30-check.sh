@@ -7,7 +7,7 @@
 #   <name>.migrated.json  listdescriptors after Qtum's own `migratewallet`
 set -eu
 CLI="qtum-cli -regtest -datadir=/w"
-qtumd -regtest -datadir=/w -daemon -printtoconsole=0 >/dev/null
+qtumd -regtest -datadir=/w -daemon -addrindex=1 -logevents=1 -printtoconsole=0 >/dev/null
 for i in $(seq 1 60); do $CLI getblockchaininfo >/dev/null 2>&1 && break; sleep 1; done
 for name in hd-plain hd-encrypted hd-imported nonhd; do
     {
