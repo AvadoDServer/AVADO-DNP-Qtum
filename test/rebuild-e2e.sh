@@ -16,8 +16,8 @@
 # 3. Failure cases: wrong password, a rebuilt wallet that misses a key
 #    (drop-one-key), a rebuild interrupted by a container restart, a new
 #    wallet that cannot be closed (unload-fails), a stop in the middle of the
-#    final swap (crash-during-swap), and a wallet in place that is not the
-#    saved copy.
+#    final swap (crash-during-swap, crash-during-swap-partial), a wallet in
+#    place that is not the saved copy, and a saved copy that is gone.
 # Exits non-zero on the first failure and removes its containers and volumes.
 set -euo pipefail
 IMAGE=${1:?usage: $0 <image>}
@@ -262,6 +262,34 @@ log_has 'crash-during-swap stops the monitor' || fail "crash-during-swap: the sw
 log_has 'interrupted wallet rebuild was finished' || fail "crash-during-swap: the swap was not finished at start-up"
 echo "ok   crash-during-swap: the swap was finished at the next start"
 no_secrets_in_log hd-plain
+stop
+
+echo "--- the saved copy is gone: the rebuild copies the wallet in place and goes on"
+start nonhd fail-migration
+wait_state failed 300
+in_box 'rm -rf /package/data/wallet-backups/*'
+[ "$(status | jq -r .migration.canRebuild)" = true ] || fail "no saved copy: the rebuild is not offered"
+LEGACY_SHA=$(legacy_sha)
+rebuild_ok nonhd
+in_box 'ls -d /package/data/wallet-backups/*-legacy-wallet-before-rebuild/wallet.dat' >/dev/null || fail "no saved copy: the wallet in place was not copied first"
+echo "ok   no saved copy: rebuilt from a fresh copy of the wallet in place"
+stop
+
+echo "--- stopped after only wallet.dat was moved aside: the next start moves the rest too"
+start hd-plain fail-migration,crash-during-swap-partial
+wait_state failed 300
+# Berkeley DB files of the old wallet next to it (as Qtum v29 and older leave them)
+in_box 'cd /package/data/qtum/regtest/wallets && mkdir database && touch db.log .walletlock'
+LEGACY_SHA=$(legacy_sha)
+rebuild_ok hd-plain
+log_has 'crash-during-swap-partial stops the monitor' || fail "partial swap: the switch did not fire"
+log_has 'interrupted wallet rebuild was finished' || fail "partial swap: the swap was not finished at start-up"
+left=$(in_box 'ls -A /package/data/qtum/regtest/wallets' | grep -vE '^(wallet\.dat|wallet\.dat-journal|legacy-wallet-replaced-.*)$' || true)
+[ -z "$left" ] || fail "partial swap: old wallet files left next to the new wallet: $left"
+for f in wallet.dat database db.log .walletlock README.txt; do
+    in_box "ls -d /package/data/qtum/regtest/wallets/legacy-wallet-replaced-*/$f" >/dev/null || fail "partial swap: $f is not in the kept directory"
+done
+echo "ok   partial swap: only the new wallet in the wallet folder, every old wallet file kept"
 stop
 
 echo "PASS"

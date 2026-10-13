@@ -51,6 +51,7 @@ const REBUILT_PREFIX = "rebuilt-";
 //   unload-fails    closing the new wallet fails, so it must be parked
 //   crash-during-swap  the monitor exits between moving the old wallet aside and
 //                   moving the new one in (as on a power cut); the next start must finish
+//   crash-during-swap-partial  the same, after moving only the old wallet.dat (not its log files)
 const TEST_HOOKS = String(process.env.QTUM_MONITOR_TEST_HOOKS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 // wallet-state.json keys
@@ -461,7 +462,10 @@ const finishInterruptedRebuild = () => {
                 finished = true; // the new wallet was already in place
             } else if (keep && rebuiltReady && !walletfiles.exists(file)
                 && walletfiles.walletFileKind(path.join(keep, "wallet.dat")) === "bdb") {
-                moveRebuiltIn(rebuild.walletName, keep); // the old wallet was already moved aside
+                // the old wallet was moved aside, maybe without its log files:
+                // move whatever is left of it too (moves only what is there)
+                moveLegacyAside(keep);
+                moveRebuiltIn(rebuild.walletName, keep);
                 finished = true;
             } else if (keep && rebuiltReady && kind === "bdb" && walletfiles.sha256File(file) === rebuild.sourceSha256) {
                 moveLegacyAside(keep); // nothing was moved yet
@@ -819,6 +823,11 @@ class RebuildError extends Error {}
 
 const REBUILD_STATES = ["failed", "needs-passphrase"];
 
+// A rebuild needs a failed upgrade and a legacy wallet in place: it copies
+// that wallet first when the saved copy is missing or is not the same file.
+const rebuildPossible = (migration) => !!migration && REBUILD_STATES.indexOf(migration.state) >= 0
+    && walletfiles.walletFileKind(walletFile()) === "bdb";
+
 // Long base58 or hex strings in an error message could be keys: hide them.
 const scrub = (message) => String(message)
     .replace(/[1-9A-HJ-NP-Za-km-z]{50,}/g, "[key]")
@@ -1028,11 +1037,8 @@ const rebuildWalletTask = async (passphrase) => {
     rebuildProgress = null;
     walletStatus = { state: "rebuilding", message: "Getting ready", problem: null };
     const migration = getMigration();
-    if (!migration || REBUILD_STATES.indexOf(migration.state) < 0 || !migration.backupDir) {
+    if (!rebuildPossible(migration)) {
         throw new RebuildError("There is no failed wallet upgrade to rebuild from.");
-    }
-    if (walletfiles.walletFileKind(path.join(migration.backupDir, "wallet.dat")) !== "bdb") {
-        throw new RebuildError("The copy of the old wallet was not found.");
     }
     await waitForRpc();
     if (await descriptorWalletLoaded()) {
@@ -1059,7 +1065,7 @@ const rebuildWalletTask = async (passphrase) => {
                 ? "There is not enough free disk space on your AVADO to copy the wallet."
                 : "The wallet in use could not be copied.");
         }
-        updateMigration({ backupDir: backup.dir, sha256: backup.sha256, originalBackupDir: migration.originalBackupDir || migration.backupDir });
+        updateMigration({ backupDir: backup.dir, sha256: backup.sha256, originalBackupDir: migration.originalBackupDir || migration.backupDir || null });
         backupDir = backup.dir;
         log("wallet rebuild: the saved copy is not the wallet in place; the wallet in place was copied and is rebuilt from that copy");
     }
@@ -1139,6 +1145,7 @@ const rebuildWalletTask = async (passphrase) => {
     // test switches are read now: qtumd does not answer while it is stopped
     const unloadFails = await testHook("unload-fails");
     const crashInSwap = await testHook("crash-during-swap");
+    const crashInSwapPartial = await testHook("crash-during-swap-partial");
     if (!(await unloadRebuiltWallet(walletName, unloadFails))) {
         await parkRebuiltWallet(walletName, walletDir, unloadFails);
         throw new RebuildError("The new wallet could not be closed, so it was not used.");
@@ -1165,6 +1172,12 @@ const rebuildWalletTask = async (passphrase) => {
     }
     // from here on a restart finishes the swap (finishInterruptedRebuild)
     updateRebuild({ step: "replacing", result, keepDir: keep, sourceSha256 });
+    if (crashInSwapPartial) {
+        // only wallet.dat was moved aside, its log files were not
+        walletfiles.moveInto(walletFile(), keep);
+        log("wallet rebuild: test hook crash-during-swap-partial stops the monitor now");
+        process.exit(1);
+    }
     moveLegacyAside(keep);
     if (crashInSwap) {
         log("wallet rebuild: test hook crash-during-swap stops the monitor now");
@@ -1320,7 +1333,7 @@ server.get("/walletstatus", async (req, res) => {
             failedAt: migration.failedAt || null,
             error: migration.error || null,
             encrypted: !!migration.encrypted,
-            canRebuild: REBUILD_STATES.indexOf(migration.state) >= 0 && !!migration.backupDir,
+            canRebuild: rebuildPossible(migration),
         } : null,
         rebuild: rebuild ? {
             state: rebuild.state,
@@ -1442,8 +1455,7 @@ server.post("/migrate", wizardOnly, async (req, res) => {
 server.post("/rebuild", wizardOnly, async (req, res) => {
     try {
         const migration = getMigration();
-        if (!migration || REBUILD_STATES.indexOf(migration.state) < 0 || !migration.backupDir
-            || walletfiles.walletFileKind(path.join(migration.backupDir, "wallet.dat")) !== "bdb") {
+        if (!rebuildPossible(migration)) {
             throw new UserError("There is no failed wallet upgrade to rebuild from.");
         }
         const passphrase = req.body && req.body.passphrase ? String(req.body.passphrase) : null;
