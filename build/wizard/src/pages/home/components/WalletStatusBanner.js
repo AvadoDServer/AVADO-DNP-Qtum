@@ -94,7 +94,7 @@ const Comp = ({ rpcClient, session }) => {
         const progress = status.rebuild && typeof status.rebuild.progress === "number" ? `: ${status.rebuild.progress} %` : "";
         return box("is-info", (
             <>
-                <p><b>Rebuilding your wallet from the copy of your old wallet.</b> This takes a while (up to an hour).
+                <p><b>Rebuilding your wallet from the copy of your old wallet.</b> This can take a few hours.
                     Your old wallet stays on your AVADO, so your coins are safe.
                     {encrypted ? "" : " Staking starts again by itself when it is done."}</p>
                 {step && <p style={{ marginTop: 10 }}>{step}{progress}</p>}
@@ -162,7 +162,10 @@ const Comp = ({ rpcClient, session }) => {
                     <div className="box" style={{ marginTop: 10 }}>
                         <p>This reads every key from the copy of your old wallet, creates a new wallet in the new format with the same
                             keys, and checks that nothing is missing before it is used. Your old wallet stays on the AVADO. Scanning
-                            the blockchain takes a while (up to an hour); staking starts again by itself when it is done.</p>
+                            the blockchain can take a few hours.{" "}
+                            {encrypted
+                                ? "Your wallet has a password: you are asked for it before the keys are read, and the new wallet stays locked and does not stake, as after the upgrade."
+                                : "When it is done, staking starts again by itself. If your wallet has a password, you are asked for it first, and the new wallet then stays locked and does not stake, as after the upgrade."}</p>
                         <div style={{ marginTop: 10 }}>
                             <button className="button is-small is-danger" onClick={() => rebuild(false)}>Rebuild</button>
                             <button className="button is-small" style={{ marginLeft: 10 }} onClick={() => setConfirmRebuild(false)}>Cancel</button>

@@ -59,6 +59,8 @@ it("offers the rebuild next to Try again when the upgrade failed, and asks first
     await click("Rebuild the wallet from the old copy");
     expect(container.textContent).toContain("reads every key from the copy of your old wallet");
     expect(container.textContent).toContain("Your old wallet stays on the AVADO");
+    expect(container.textContent).toContain("can take a few hours");
+    expect(container.textContent).not.toContain("up to an hour");
     expect(monitor.rebuildWallet).not.toHaveBeenCalled();
 
     await click("Cancel");
@@ -68,6 +70,14 @@ it("offers the rebuild next to Try again when the upgrade failed, and asks first
     await click("Rebuild");
     expect(monitor.rebuildWallet).toHaveBeenCalledWith(undefined);
     expect(container.textContent).toContain("Rebuilding your wallet...");
+});
+
+it("does not promise staking by itself for a wallet with a password", async () => {
+    await render(Object.assign({}, failedUpgrade, { migration: Object.assign({}, failedUpgrade.migration, { encrypted: true }) }));
+    await click("Rebuild the wallet from the old copy");
+    expect(container.textContent).not.toContain("staking starts again by itself");
+    expect(container.textContent).toContain("you are asked for it before the keys are read");
+    expect(container.textContent).toContain("stays locked and does not stake");
 });
 
 it("does not offer the rebuild for other wallet problems", async () => {
