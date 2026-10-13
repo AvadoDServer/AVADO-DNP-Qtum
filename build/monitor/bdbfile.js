@@ -43,6 +43,15 @@ class BdbFileError extends Error {}
 class PageFile {
     constructor(file) {
         this.fd = fs.openSync(file, "r");
+        try {
+            this.init();
+        } catch (err) {
+            fs.closeSync(this.fd);
+            throw err;
+        }
+    }
+
+    init() {
         this.size = fs.fstatSync(this.fd).size;
         const head = Buffer.alloc(512);
         const n = fs.readSync(this.fd, head, 0, head.length, 0);

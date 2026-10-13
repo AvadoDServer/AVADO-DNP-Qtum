@@ -312,8 +312,31 @@ log_has 'the wallet tool cannot read the old wallet, reading it directly' || fai
 [ "$(status | jq -r .rebuild.seedRestored)" = true ] || fail "cut: the seed was not restored"
 in_box 'grep -q "\"source\": \"raw-pages\"" /package/data/wallet-state.json && grep -q "\"pagesMissing\": [1-9]" /package/data/wallet-state.json' \
     || fail "cut: the report for support has no source/pagesMissing"
+in_box 'grep -q "\"unrecoveredKeys\": 0" /package/data/wallet-state.json && grep -q "\"namedOnlyKeys\": [1-9]" /package/data/wallet-state.json' \
+    || fail "cut: the keys named without a key record were not checked"
 echo "ok   cut: real upgrade failure, read directly, every address and the whole balance restored"
+echo "ok   cut: the keys the file names without a key record are all in the new wallet (from the seed)"
 no_secrets_in_log hd-plain
+stop
+
+echo "--- a damaged wallet file naming a key that cannot be recovered: the rebuild is refused"
+mkdir -p "$WORK/regtest/wallets/hd-imported-broken"
+node "$HERE/../build/monitor/test/fixtures/truncate.js" "$WORK/regtest/wallets/hd-imported/wallet.dat" "$OUT/hd-imported.truth.json" \
+    "$WORK/regtest/wallets/hd-imported-broken/wallet.dat" --break-imported-key > /dev/null || fail "could not damage the wallet"
+start hd-imported-broken ""
+wait_state failed 300
+LEGACY_SHA=$(legacy_sha)
+monitor POST rebuild '{}' | grep -q started || fail "rebuild did not start"
+sleep 2
+wait_state 'failed|ready' 600
+[ "$(state)" = failed ] || fail "unrecoverable key: the new wallet was used"
+status | jq -r .message | grep -qE '^[0-9]+ keys? of the damaged wallet could not be recovered. Contact AVADO support.' || fail "unrecoverable key: $(status | jq -r .message)"
+[ "$(legacy_sha)" = "$LEGACY_SHA" ] || fail "unrecoverable key: the old wallet changed"
+in_box 'ls -d /package/data/wallet-rebuild-failed/*/rebuilt-*/wallet.dat' >/dev/null || fail "unrecoverable key: the new wallet was not parked"
+in_box '! ls -d /package/data/qtum/regtest/wallets/rebuilt-* 2>/dev/null' || fail "unrecoverable key: the new wallet is still in the wallet directory"
+in_box 'grep -q "\"unrecoveredKeys\": [1-9]" /package/data/wallet-state.json' || fail "unrecoverable key: unrecoveredKeys not in the report"
+echo "ok   unrecoverable key: refused with the count, old wallet untouched, new wallet parked"
+no_secrets_in_log hd-imported
 stop
 
 echo "PASS"

@@ -921,7 +921,7 @@ const importWithProgress = async (walletName, descriptors) => {
 };
 
 // Every check must pass before the new wallet may replace the old one.
-const checkRebuiltWallet = async (walletName, wallet, chain, imported, descriptorsBefore) => {
+const checkRebuiltWallet = async (walletName, wallet, chain, imported, descriptorsBefore, report) => {
     const expected = legacywallet.expectedAddresses(wallet, chain);
     let missing = 0;
     for (const address of expected) {
@@ -929,6 +929,20 @@ const checkRebuiltWallet = async (walletName, wallet, chain, imported, descripto
         if (!info.ismine) missing++;
     }
     if (missing) throw new RebuildError(`${plural(missing, "address", "addresses")} of the old wallet ${missing === 1 ? "is" : "are"} missing in the new wallet.`);
+    // a damaged file: the keys it names without a usable key record must be
+    // there too (HD keys come back from the seed)
+    const named = legacywallet.namedOnlyAddresses(wallet, chain);
+    let unrecovered = 0;
+    for (const address of named) {
+        const info = await rpc("getaddressinfo", [address], { walletName, timeout: 15000 });
+        if (!info.ismine) unrecovered++;
+    }
+    report.unrecoveredKeys = unrecovered;
+    if (unrecovered) {
+        updateRebuild({ result: { report } });
+        log(`wallet rebuild: ${unrecovered} of ${named.length} keys named in the damaged wallet are not in the new wallet`);
+        throw new RebuildError(`${unrecovered} ${unrecovered === 1 ? "key" : "keys"} of the damaged wallet could not be recovered. Contact AVADO support.`);
+    }
     const listed = (await rpc("listdescriptors", [], { walletName, timeout: 15000 })).descriptors.length;
     if (listed !== descriptorsBefore + imported) {
         throw new RebuildError(`The new wallet has ${listed - descriptorsBefore} key sets instead of ${imported}.`);
@@ -940,7 +954,7 @@ const checkRebuiltWallet = async (walletName, wallet, chain, imported, descripto
     }
     const info = await rpc("getwalletinfo", [], { walletName, timeout: 15000 });
     if (info.descriptors !== true || !(info.keypoolsize >= 1)) throw new RebuildError("The new wallet cannot make new addresses.");
-    return expected.length;
+    return expected.length + named.length;
 };
 
 // Copy the old wallet's labels (and payee address book) to the new wallet.
@@ -1142,7 +1156,7 @@ const rebuildWalletTask = async (passphrase) => {
 
         // 3. the checks
         setRebuildStep("Checking the result");
-        const addresses = await checkRebuiltWallet(walletName, wallet, chain, descriptors.length, descriptorsBefore);
+        const addresses = await checkRebuiltWallet(walletName, wallet, chain, descriptors.length, descriptorsBefore, report);
         report.labelsCopied = await copyLabels(walletName, wallet);
         report.addressesChecked = addresses;
         log(`wallet rebuild: all ${addresses} addresses of the old wallet are in the new wallet`);

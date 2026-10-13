@@ -211,6 +211,77 @@ test("a damaged key record is skipped in a damaged file, refused in a healthy on
     assert.strictEqual(wallet.keys.length, keys.length - 1);
 });
 
+// Every P2PKH address the descriptors of buildDescriptors make the wallet own:
+// the HD combo() ranges and the single keys
+function coveredAddresses(descriptors) {
+    const out = new Set();
+    descriptors.forEach((d) => {
+        const hd = /^combo\((tprv[1-9A-HJ-NP-Za-km-z]+)\/0h\/([01])h\/\*h\)/.exec(d.desc);
+        if (hd) {
+            const ext = qtumkeys.decodeExtendedPrivateKey(hd[1]);
+            const node = qtumkeys.deriveChild(qtumkeys.deriveChild({ key: ext.key, chainCode: ext.chainCode }, 0x80000000), 0x80000000 + Number(hd[2]));
+            for (let i = 0; i <= d.range[1]; i++) {
+                out.add(lw.p2pkhAddress(qtumkeys.publicKeyFromPrivate(qtumkeys.deriveChild(node, 0x80000000 + i).key, true), "regtest"));
+            }
+            return;
+        }
+        const single = /^combo\(([1-9A-HJ-NP-Za-km-z]{51,52})\)/.exec(d.desc);
+        if (single) {
+            const w = qtumkeys.decodeWif(single[1]);
+            out.add(lw.p2pkhAddress(qtumkeys.publicKeyFromPrivate(w.key, w.compressed), "regtest"));
+        }
+    });
+    return out;
+}
+
+test("keys a damaged file names without a key record must be recovered: HD keys come back from the seed", () => {
+    const t = truth("hd-plain");
+    const parsed = lw.parseDump(dumpText("hd-plain"));
+    const full = lw.readLegacyWallet(parsed.records, null, parsed.counts);
+    const pubkeyOf = new Map(full.keys.map((k) => [qtumkeys.encodeWif(k.secret, 0xef, k.compressed), k.pubkey.toString("hex")]));
+    const recordPubkey = (r) => r.key.slice(1 + r.key[0] + 1).toString("hex");
+    // three keypool keys and two used keys lose their key record; two of the
+    // keypool keys also lose their key metadata (named by the keypool only)
+    const reserve = t.keys.filter((k) => k.flags.reserve !== undefined).slice(0, 3).map((k) => pubkeyOf.get(k.wif));
+    const used = t.keys.filter((k) => k.flags.label !== undefined && k.hdkeypath).slice(0, 2).map((k) => pubkeyOf.get(k.wif));
+    const lost = new Set(reserve.concat(used));
+    const records = new Map(parsed.records);
+    records.set("key", parsed.records.get("key").filter((r) => !lost.has(recordPubkey(r))));
+    records.set("keymeta", parsed.records.get("keymeta").filter((r) => reserve.slice(0, 2).indexOf(recordPubkey(r)) < 0));
+    const wallet = lw.readLegacyWallet(records, null, parsed.counts, { damaged: true });
+    assert.strictEqual(wallet.keys.length, full.keys.length - 5);
+    assert.strictEqual(wallet.namedOnly.length, 5);
+    const named = lw.namedOnlyAddresses(wallet, "regtest");
+    const covered = coveredAddresses(lw.buildDescriptors(wallet, "regtest"));
+    named.forEach((a) => assert.ok(covered.has(a), `${a} is recovered from the seed`));
+    assert.strictEqual(lw.summary(wallet, null, { source: "raw-pages" }).namedOnlyKeys, 5);
+
+    // a key the file names that the seed does not give: the gate must refuse
+    const stranger = qtumkeys.publicKeyFromPrivate(require("crypto").randomBytes(32), true);
+    const meta = parsed.records.get("keymeta")[0];
+    const strangerMeta = { key: Buffer.concat([Buffer.from([7]), Buffer.from("keymeta"), Buffer.from([33]), stranger]), value: meta.value };
+    records.set("keymeta", records.get("keymeta").concat([strangerMeta]));
+    const refused = lw.readLegacyWallet(records, null, parsed.counts, { damaged: true });
+    const missing = lw.namedOnlyAddresses(refused, "regtest").filter((a) => !coveredAddresses(lw.buildDescriptors(refused, "regtest")).has(a));
+    assert.deepStrictEqual(missing, [lw.p2pkhAddress(stranger, "regtest")]);
+    // a healthy dump is not checked this way
+    assert.strictEqual(lw.readLegacyWallet(parsed.records, null, parsed.counts).namedOnly.length, 0);
+});
+
+test("the cut-short fixture: keys named on the pages left but not readable are all derivable from the seed", () => {
+    const full = fs.readFileSync(walletFile("hd-plain"));
+    const pages = full.length / PAGE;
+    for (let cut = Math.ceil(pages * 0.6); cut < pages; cut++) {
+        const raw = lw.readWalletFile(tmpCopy(full.slice(0, cut * PAGE)));
+        const wallet = lw.readLegacyWallet(raw.records, null, raw.counts, { damaged: true });
+        if (!wallet.hd) continue;
+        const covered = coveredAddresses(lw.buildDescriptors(wallet, "regtest"));
+        lw.namedOnlyAddresses(wallet, "regtest").forEach((a) => assert.ok(covered.has(a), `cut ${cut}: ${a}`));
+        return;
+    }
+    assert.fail("no cut keeps the seed");
+});
+
 test.after(() => {
     for (let i = 0; i < tmpCount; i++) {
         try { fs.unlinkSync(path.join(os.tmpdir(), `qtum-bdb-test-${process.pid}-${i}.dat`)); } catch (e) { /* gone */ }

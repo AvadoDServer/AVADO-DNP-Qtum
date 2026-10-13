@@ -108,7 +108,7 @@ class Reader {
 // The record types the rebuild reads. Every other record (transactions above
 // all: a staking wallet has tens of thousands) is only counted, so that a dump
 // of hundreds of MB can be read with little memory.
-const KEPT_TYPES = ["key", "ckey", "mkey", "hdchain", "keymeta", "name", "purpose", "defaultkey"];
+const KEPT_TYPES = ["key", "ckey", "mkey", "hdchain", "keymeta", "name", "purpose", "defaultkey", "pool"];
 
 const badDump = (why) => new LegacyWalletError(`The old wallet could not be read (${why}).`, "bad-dump");
 
@@ -469,6 +469,37 @@ function readLegacyWallet(records, passphrase, allCounts, options) {
             keys.set(pubkey.toString("hex"), { pubkey, secret });
         });
     }
+    // In a damaged file, every public key the file names (key and ckey records
+    // that could not be used, key metadata and keypool entries whose key
+    // record is lost): the rebuilt wallet must own these too (HD keys come
+    // back from the seed), or the rebuild is refused.
+    const namedOnly = new Map();
+    if (damaged) {
+        const name = (fn) => {
+            try {
+                const pubkey = fn();
+                const hex = pubkey.toString("hex");
+                if (!keys.has(hex)) namedOnly.set(hex, pubkey);
+            } catch (e) {
+                // not even the public key is readable
+            }
+        };
+        const fromKey = (type) => ({ key }) => name(() => {
+            const r = new Reader(key, type);
+            r.string();
+            return readPubkey(r);
+        });
+        get("key").forEach(fromKey("key"));
+        get("ckey").forEach(fromKey("ckey"));
+        get("keymeta").forEach(fromKey("keymeta"));
+        // CKeyPool: int32 (unused), int64 time, CPubKey, ...
+        get("pool").forEach(({ value }) => name(() => {
+            const r = new Reader(value, "pool");
+            r.i32();
+            r.i64();
+            return readPubkey(r);
+        }));
+    }
     if (keys.size === 0) {
         if (damaged) throw new LegacyWalletError(TOO_DAMAGED, "too-damaged");
         throw new LegacyWalletError("The old wallet contains no private keys.", "no-keys");
@@ -622,6 +653,7 @@ function readLegacyWallet(records, passphrase, allCounts, options) {
         derivedMissing,
         badRecords,
         seedFoundByDerivation,
+        namedOnly: Array.from(namedOnly.values()),
     };
 }
 
@@ -798,6 +830,12 @@ function expectedAddresses(wallet, networkName) {
     return Array.from(set).sort();
 }
 
+// The P2PKH addresses of the public keys a damaged file names without a
+// usable key record (see readLegacyWallet). The rebuilt wallet must own them.
+function namedOnlyAddresses(wallet, networkName) {
+    return Array.from(new Set((wallet.namedOnly || []).map((pubkey) => p2pkhAddress(pubkey, networkName)))).sort();
+}
+
 // The first receive address of the active HD chain (m/0'/0'/0'), derived from
 // the seed (its key record may be lost in a damaged file), or null
 function firstReceiveAddress(wallet, networkName) {
@@ -819,6 +857,7 @@ function summary(wallet, descriptors, parsed) {
         pagesMissing: pages ? pages.pagesMissing : 0,
         badRecords: wallet.badRecords || 0,
         seedFoundByDerivation: !!wallet.seedFoundByDerivation,
+        namedOnlyKeys: (wallet.namedOnly || []).length,
         encrypted: wallet.encrypted,
         hd: !!wallet.hd,
         seeds: wallet.seeds.length,
@@ -844,6 +883,7 @@ module.exports = {
     buildDescriptors,
     expectedAddresses,
     firstReceiveAddress,
+    namedOnlyAddresses,
     p2pkhAddress,
     descriptorChecksum,
     encodeExtendedPrivateKey,
