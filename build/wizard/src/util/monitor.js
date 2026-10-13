@@ -43,6 +43,11 @@ const retryWalletUpgrade = (passphrase) => {
     return axios.post(`${baseUrl}/migrate`, passphrase ? { passphrase } : {}, wizardHeaders);
 }
 
+// Rebuild the wallet from the copy of the old wallet (when the upgrade keeps failing)
+const rebuildWallet = (passphrase) => {
+    return axios.post(`${baseUrl}/rebuild`, passphrase ? { passphrase } : {}, wizardHeaders);
+}
+
 // The plain-language message the monitor sent, or a fallback
 const errorMessage = (err, fallback) => {
     return (err && err.response && err.response.data && err.response.data.error) || fallback;
@@ -58,5 +63,6 @@ export default {
     importPrivateKey,
     restoreWallet,
     retryWalletUpgrade,
+    rebuildWallet,
     errorMessage,
 }
