@@ -9,6 +9,7 @@
 #    Its `dumpwallet` output is the ground truth.
 # 2. The Qtum v29.1 wallet tool in the package image (the one the rebuild
 #    uses) dumps every record of each wallet: <name>.dump.
+#    The wallet files are kept as <name>.wallet.dat (for bdbfile.js).
 # 3. groundtruth.js turns the `dumpwallet` output into <name>.truth.json.
 # 4. v30-check.sh: the Qtum v30.2 node of the package image computes the
 #    checksums of the descriptors the rebuild makes (<name>.descinfo.json),
@@ -46,6 +47,8 @@ for wallet in hd-plain hd-encrypted hd-imported nonhd; do
     docker run --rm --platform linux/amd64 -v "$tmp:/w" --entrypoint /usr/local/lib/qtum-legacy/qtum-wallet "$IMAGE" \
         -datadir=/w -wallet= -dumpfile=/w/out.dump dump >/dev/null
     cp "$tmp/out.dump" "$OUT/$wallet.dump"
+    # the wallet file itself, for the tests of the direct (raw page) reader
+    cp "$WORK/regtest/wallets/$wallet/wallet.dat" "$OUT/$wallet.wallet.dat"
     rm -rf "$tmp"
     node "$HERE/groundtruth.js" "$WORK/$wallet.dumpwallet" "$WORK/$wallet.info.json" \
         $([ $wallet = hd-encrypted ] && echo "$WORK/hd-encrypted.passphrase") > "$OUT/$wallet.truth.json"

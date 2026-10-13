@@ -63,6 +63,8 @@ for i in 1 2 3; do
 done
 w hd-imported importprivkey "$EXT_WIF_COMPRESSED" "Imported key" false
 w hd-imported importprivkey "$EXT_WIF_UNCOMPRESSED" "Old paper wallet" false
+# a label longer than a quarter page: Berkeley DB keeps it on overflow pages
+w hd-imported setlabel "$a" "$(for i in $(seq 1 450); do printf 'Long label '; done)"
 w hd-imported importaddress "$(w miner getnewaddress "" legacy)" "Watched" false
 
 # nonhd: no HD seed at all, only imported keys

@@ -25,6 +25,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const readline = require("readline");
 const qtumkeys = require("./qtumkeys");
+const bdbfile = require("./bdbfile");
 
 const HARDENED = 0x80000000;
 const DUMP_MAGIC = "BITCOIN_CORE_WALLET_DUMP";
@@ -41,7 +42,7 @@ const NETWORKS = {
 const network = (name) => (name === "main" ? NETWORKS.main : NETWORKS.test);
 
 class LegacyWalletError extends Error {
-    // code: needs-passphrase | wrong-passphrase | no-keys | corrupt | bad-dump
+    // code: needs-passphrase | wrong-passphrase | no-keys | corrupt | bad-dump | too-damaged
     constructor(message, code) {
         super(message);
         this.code = code;
@@ -222,6 +223,50 @@ function parseDumpFile(file) {
     });
 }
 
+/**
+ * Read the records of a legacy wallet file directly from its pages, for a
+ * damaged file the wallet tool cannot dump (bdbfile.js). Same result as
+ * parseDump, plus what was found damaged or missing. The file is only read.
+ * @param {string} file wallet.dat
+ * @returns {{format, records, counts, source: "raw-pages", pages: Object}}
+ */
+function readWalletFile(file) {
+    const records = new Map();
+    const counts = {};
+    const seen = new Set();
+    let unreadable = 0;
+    let pages;
+    try {
+        pages = bdbfile.scanRecords(file, (key, value) => {
+            let type;
+            try {
+                type = new Reader(key, "record").string();
+            } catch (e) {
+                unreadable++;
+                return;
+            }
+            // the same record twice (an old copy of a page) is kept once
+            const id = `${key.toString("hex")},${value.toString("hex")}`;
+            if (KEPT_TYPES.indexOf(type) >= 0) {
+                if (seen.has(id)) return;
+                seen.add(id);
+                if (!records.has(type)) records.set(type, []);
+                records.get(type).push({ key, value });
+            }
+            counts[type] = (counts[type] || 0) + 1;
+        });
+    } catch (err) {
+        if (err instanceof bdbfile.BdbFileError) throw new LegacyWalletError(TOO_DAMAGED, "too-damaged");
+        throw err;
+    }
+    const n = (type) => (records.get(type) || []).length;
+    if (!n("hdchain") && !n("key") && !n("ckey")) throw new LegacyWalletError(TOO_DAMAGED, "too-damaged");
+    pages.damagedItems += unreadable;
+    return { format: "bdb", records, counts, source: "raw-pages", pages };
+}
+
+const TOO_DAMAGED = "The old wallet file is too damaged to read. Contact AVADO support.";
+
 // ---------------------------------------------------------------------------
 // Keys and encryption
 // ---------------------------------------------------------------------------
@@ -335,8 +380,25 @@ const NULL_ID = Buffer.alloc(20).toString("hex");
  * @param {Object} [allCounts] counts of every record type, from parseDump
  * @returns {{encrypted, hd, seeds, keys, labels, unsupported, counts, derivedMissing}}
  */
-function readLegacyWallet(records, passphrase, allCounts) {
+function readLegacyWallet(records, passphrase, allCounts, options) {
     const get = (type) => records.get(type) || [];
+    // damaged: the records were read from a damaged file (readWalletFile).
+    // A record that cannot be read or checked is then left out (and counted)
+    // instead of refusing the whole wallet; only the checked keys are used.
+    const damaged = !!(options && options.damaged);
+    let badRecords = 0;
+    const each = (type, fn) => get(type).forEach((record) => {
+        if (!damaged) {
+            fn(record);
+            return;
+        }
+        try {
+            fn(record);
+        } catch (err) {
+            if (!(err instanceof LegacyWalletError) || err.code !== "corrupt") throw err;
+            badRecords++;
+        }
+    });
     // counts of every record type (parseDump only keeps some of them)
     const counts = {};
     if (allCounts) Object.keys(allCounts).forEach((type) => { counts[type] = allCounts[type]; });
@@ -344,7 +406,7 @@ function readLegacyWallet(records, passphrase, allCounts) {
 
     // plain keys
     const keys = new Map(); // pubkey hex -> key
-    get("key").forEach(({ key, value }) => {
+    each("key", ({ key, value }) => {
         const kr = new Reader(key, "key");
         kr.string();
         const pubkey = readPubkey(kr);
@@ -362,20 +424,25 @@ function readLegacyWallet(records, passphrase, allCounts) {
     });
 
     // encrypted keys
-    const crypted = get("ckey").map(({ key, value }) => {
+    const crypted = [];
+    each("ckey", ({ key, value }) => {
         const kr = new Reader(key, "ckey");
         kr.string();
         const pubkey = readPubkey(kr);
         const vr = new Reader(value, "ckey");
         const data = vr.vector();
         if (vr.remaining() >= 32 && !hash256(data).equals(vr.bytes(32))) throw corrupt("encrypted key checksum");
-        return { pubkey, data };
+        crypted.push({ pubkey, data });
     });
     const encrypted = crypted.length > 0;
     if (encrypted) {
         if (!passphrase) throw new LegacyWalletError("The wallet is protected with a password.", "needs-passphrase");
-        const masterKeys = get("mkey").map(({ value }) => parseMasterKey(value));
+        const masterKeys = [];
+        each("mkey", ({ value }) => masterKeys.push(parseMasterKey(value)));
         if (masterKeys.length === 0) throw corrupt("the encryption key is missing");
+        // the master key must decrypt one of the first keys (in a damaged file
+        // the first one may be damaged itself)
+        const probes = crypted.slice(0, damaged ? 5 : 1);
         let master = null;
         for (const mk of masterKeys) {
             if (mk.method !== 0 || mk.rounds < 1) continue;
@@ -386,7 +453,7 @@ function readLegacyWallet(records, passphrase, allCounts) {
             } catch (e) {
                 continue; // wrong passphrase: bad padding
             }
-            if (candidate.length === 32 && decryptSecret(candidate, crypted[0].data, crypted[0].pubkey)) {
+            if (candidate.length === 32 && probes.some((c) => decryptSecret(candidate, c.data, c.pubkey))) {
                 master = candidate;
                 break;
             }
@@ -394,15 +461,22 @@ function readLegacyWallet(records, passphrase, allCounts) {
         if (!master) throw new LegacyWalletError("The wallet password is not correct.", "wrong-passphrase");
         crypted.forEach(({ pubkey, data }) => {
             const secret = decryptSecret(master, data, pubkey);
-            if (!secret) throw corrupt("an encrypted private key does not match its public key");
+            if (!secret) {
+                if (!damaged) throw corrupt("an encrypted private key does not match its public key");
+                badRecords++;
+                return;
+            }
             keys.set(pubkey.toString("hex"), { pubkey, secret });
         });
     }
-    if (keys.size === 0) throw new LegacyWalletError("The old wallet contains no private keys.", "no-keys");
+    if (keys.size === 0) {
+        if (damaged) throw new LegacyWalletError(TOO_DAMAGED, "too-damaged");
+        throw new LegacyWalletError("The old wallet contains no private keys.", "no-keys");
+    }
 
     // metadata
     const meta = new Map();
-    get("keymeta").forEach(({ key, value }) => {
+    each("keymeta", ({ key, value }) => {
         const kr = new Reader(key, "keymeta");
         kr.string();
         meta.set(readPubkey(kr).toString("hex"), parseKeyMeta(value));
@@ -421,8 +495,13 @@ function readLegacyWallet(records, passphrase, allCounts) {
 
     // HD seeds: the active one (hdchain) and older ones that keys still name
     let hd = null;
-    const chainRecords = get("hdchain");
-    const activeChain = chainRecords.length ? parseHdChain(chainRecords[0].value) : null;
+    // one hdchain record; a damaged file may also hold an older copy of it on a
+    // stale page: the one with the highest counters is the newest
+    let activeChain = null;
+    each("hdchain", ({ value }) => {
+        const c = parseHdChain(value);
+        if (!activeChain || c.externalCount + c.internalCount > activeChain.externalCount + activeChain.internalCount) activeChain = c;
+    });
     const seedIds = new Map(); // seed id -> {externalCount, internalCount, active}
     if (activeChain && activeChain.seedId.toString("hex") !== NULL_ID) {
         seedIds.set(activeChain.seedId.toString("hex"), {
@@ -441,31 +520,60 @@ function readLegacyWallet(records, passphrase, allCounts) {
         else s.internalCount = Math.max(s.internalCount, pos.index + 1);
     });
 
+    // A damaged file may have lost the hdchain record and the key metadata
+    // that name the seed: then find it by derivation (a key whose first
+    // derived keys are in the wallet is the seed).
+    let seedFoundByDerivation = false;
+    if (damaged && !Array.from(seedIds.keys()).some((id) => byId.has(id))) {
+        const found = findSeedByDerivation(keys);
+        if (found) {
+            seedIds.set(found.seedId, { externalCount: found.externalCount, internalCount: found.internalCount, active: true, version: 2 });
+            seedFoundByDerivation = true;
+        }
+    }
+    if (damaged && !activeChain && seedIds.size && !Array.from(seedIds.values()).some((s) => s.active)) {
+        // no hdchain record: the seed that the most keys name is the active one
+        let best = null;
+        seedIds.forEach((s, id) => {
+            if (byId.has(id) && (!best || s.externalCount + s.internalCount > best.externalCount + best.internalCount)) best = s;
+        });
+        if (best) {
+            best.active = true;
+            best.version = 2;
+        }
+    }
+
     const seeds = [];
     let derivedMissing = 0;
     seedIds.forEach((s, seedId) => {
         const seedKey = byId.get(seedId);
         if (!seedKey) {
-            if (s.active) throw corrupt("the HD seed key is missing");
+            if (s.active && !damaged) throw corrupt("the HD seed key is missing");
             return; // keys of an unknown seed are imported one by one
         }
         const I = crypto.createHmac("sha512", "Bitcoin seed").update(seedKey.secret).digest();
         const master = { key: I.slice(0, 32), chainCode: I.slice(32) };
         const account = qtumkeys.deriveChild(master, HARDENED);
         [s.externalCount, s.internalCount].forEach((count, chain) => {
-            if (count === 0) return;
+            if (count === 0 && !damaged) return;
             const chainNode = qtumkeys.deriveChild(account, HARDENED + chain);
-            for (let i = 0; i < count; i++) {
+            // in a damaged file the counters and the key metadata may be lost
+            // or stale: keep looking while keys turn up (gap of RANGE_MARGIN)
+            let last = -1;
+            for (let i = 0; i < count || (damaged && i <= last + RANGE_MARGIN); i++) {
                 const child = qtumkeys.deriveChild(chainNode, HARDENED + i);
                 const k = keys.get(qtumkeys.publicKeyFromPrivate(child.key, true).toString("hex"));
                 if (!k || !k.secret.equals(child.key)) {
-                    derivedMissing++;
+                    if (i < count) derivedMissing++;
                     continue;
                 }
+                last = i;
                 k.derivedFromSeed = true;
                 k.seedId = seedId;
                 k.hdPath = `m/0'/${chain}'/${i}'`;
             }
+            if (chain === 0) s.externalCount = Math.max(count, last + 1);
+            else s.internalCount = Math.max(count, last + 1);
         });
         const entry = {
             seedId,
@@ -483,12 +591,12 @@ function readLegacyWallet(records, passphrase, allCounts) {
     // address book
     const labels = new Map();
     const purposes = new Map();
-    get("name").forEach(({ key, value }) => {
+    each("name", ({ key, value }) => {
         const kr = new Reader(key, "name");
         kr.string();
         labels.set(kr.string(), new Reader(value, "name").string());
     });
-    get("purpose").forEach(({ key, value }) => {
+    each("purpose", ({ key, value }) => {
         const kr = new Reader(key, "purpose");
         kr.string();
         purposes.set(kr.string(), new Reader(value, "purpose").string());
@@ -512,7 +620,37 @@ function readLegacyWallet(records, passphrase, allCounts) {
         },
         counts,
         derivedMissing,
+        badRecords,
+        seedFoundByDerivation,
     };
+}
+
+// Look for the HD seed among the keys: a key is the seed when one of the
+// first keys derived from it (m/0'/c'/i', i < 5) is in the wallet.
+function findSeedByDerivation(keys) {
+    const probe = 5;
+    for (const k of keys.values()) {
+        const I = crypto.createHmac("sha512", "Bitcoin seed").update(k.secret).digest();
+        let account;
+        try {
+            account = qtumkeys.deriveChild({ key: I.slice(0, 32), chainCode: I.slice(32) }, HARDENED);
+        } catch (e) {
+            continue;
+        }
+        const counts = [0, 0];
+        [0, 1].forEach((chain) => {
+            const chainNode = qtumkeys.deriveChild(account, HARDENED + chain);
+            for (let i = 0; i < probe; i++) {
+                const child = qtumkeys.deriveChild(chainNode, HARDENED + i);
+                if (keys.has(qtumkeys.publicKeyFromPrivate(child.key, true).toString("hex"))) counts[chain] = i + 1;
+            }
+        });
+        if (counts[0] || counts[1]) {
+            // readLegacyWallet then looks further along both chains
+            return { seedId: hash160(k.pubkey).toString("hex"), externalCount: counts[0], internalCount: counts[1] };
+        }
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -660,15 +798,27 @@ function expectedAddresses(wallet, networkName) {
     return Array.from(set).sort();
 }
 
-// The first receive address of the active HD chain (m/0'/0'/0'), or null
+// The first receive address of the active HD chain (m/0'/0'/0'), derived from
+// the seed (its key record may be lost in a damaged file), or null
 function firstReceiveAddress(wallet, networkName) {
-    const k = wallet.keys.find((key) => key.hdPath === "m/0'/0'/0'" && wallet.hd && key.seedId === wallet.hd.seedId);
-    return k ? p2pkhAddress(k.pubkey, networkName) : null;
+    const active = wallet.seeds.find((s) => s.active);
+    if (!active) return null;
+    let node = active.master;
+    [HARDENED, HARDENED, HARDENED].forEach((i) => { node = qtumkeys.deriveChild(node, i); });
+    return p2pkhAddress(qtumkeys.publicKeyFromPrivate(node.key, true), networkName);
 }
 
-// What the old wallet contained, without any key material
-function summary(wallet, descriptors) {
+// What the old wallet contained, without any key material.
+// parsed: the result of parseDumpFile or readWalletFile (where it was read from)
+function summary(wallet, descriptors, parsed) {
+    const pages = parsed && parsed.pages;
     return {
+        source: (parsed && parsed.source) || "dump",
+        damagedPages: pages ? pages.damagedPages : 0,
+        damagedItems: pages ? pages.damagedItems : 0,
+        pagesMissing: pages ? pages.pagesMissing : 0,
+        badRecords: wallet.badRecords || 0,
+        seedFoundByDerivation: !!wallet.seedFoundByDerivation,
         encrypted: wallet.encrypted,
         hd: !!wallet.hd,
         seeds: wallet.seeds.length,
@@ -689,6 +839,7 @@ module.exports = {
     LegacyWalletError,
     parseDump,
     parseDumpFile,
+    readWalletFile,
     readLegacyWallet,
     buildDescriptors,
     expectedAddresses,
