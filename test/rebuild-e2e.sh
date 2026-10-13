@@ -14,7 +14,10 @@
 #    kept, the new wallet in the new format, nothing to rebuild a second time,
 #    and no key or password in the log.
 # 3. Failure cases: wrong password, a rebuilt wallet that misses a key
-#    (drop-one-key), and a rebuild interrupted by a container restart.
+#    (drop-one-key), a rebuild interrupted by a container restart, a new
+#    wallet that cannot be closed (unload-fails), a stop in the middle of the
+#    final swap (crash-during-swap), and a wallet in place that is not the
+#    saved copy.
 # Exits non-zero on the first failure and removes its containers and volumes.
 set -euo pipefail
 IMAGE=${1:?usage: $0 <image>}
@@ -39,7 +42,13 @@ monitor() { # method path [json]
 }
 cli() { docker exec "$NAME" qtum-cli -regtest -rpcport=3889 -rpcuser=avado -rpcpassword=avado1234 "$@"; }
 in_box() { docker exec "$NAME" sh -c "$1"; }
-status() { monitor GET walletstatus 2>/dev/null || echo '{}'; }
+# grep the container log (read whole first: grep -q would cut the pipe, and pipefail would see that)
+log_has() { local logs; logs=$(docker logs "$NAME" 2>&1); grep -qF "$1" <<<"$logs"; }
+status() { # {} while the monitor does not answer (nginx then sends an HTML error page)
+    local out
+    out=$(monitor GET walletstatus 2>/dev/null || true)
+    if jq -e . >/dev/null 2>&1 <<<"$out"; then echo "$out"; else echo '{}'; fi
+}
 state() { status | jq -r '.state // empty'; }
 wait_state() { # wanted states (regex), seconds
     local s="" i
@@ -51,7 +60,7 @@ wait_state() { # wanted states (regex), seconds
     fail "wallet state $s, expected $1"
 }
 
-start() { # wallet hooks
+start() { # wallet hooks [another wallet, copied to /package/data/other-wallet.dat]
     NAME=qtum-rebuild-$$-$1
     VOLUME=$NAME
     docker volume create "$VOLUME" >/dev/null
@@ -59,7 +68,8 @@ start() { # wallet hooks
         awk '/^\[/{s=1} s || !/^(addnode|rpcbind)=/' /package/data/qtum.conf > /tmp/qtum.conf && cat /tmp/qtum.conf > /package/data/qtum.conf
         mkdir -p /package/data/qtum/regtest/wallets
         cp -R /src/regtest/blocks /src/regtest/chainstate /src/regtest/stateQtum /package/data/qtum/regtest/
-        cp /src/regtest/wallets/$1/wallet.dat /package/data/qtum/regtest/wallets/wallet.dat"
+        cp /src/regtest/wallets/$1/wallet.dat /package/data/qtum/regtest/wallets/wallet.dat
+        [ -z '${3:-}' ] || cp /src/regtest/wallets/${3:-none}/wallet.dat /package/data/other-wallet.dat"
     docker run -d --name "$NAME" --platform linux/amd64 -e "EXTRA_OPTS=-regtest -rpcport=3889" \
         -e "QTUM_MONITOR_TEST_HOOKS=$2" -v "$VOLUME:/package/data" "$IMAGE" >/dev/null
 }
@@ -209,6 +219,49 @@ in_box '[ -z "$(ls -A /package/data/wallet-rebuild-tmp 2>/dev/null)" ]' || fail 
 echo "ok   interrupted: reported, old wallet untouched, half-made wallet parked, temporary files removed"
 # pressing Rebuild again works (without the slow switch the next start would retry the upgrade)
 rebuild_ok hd-plain
+stop
+
+echo "--- the wallet in place is not the saved copy: the rebuild uses the wallet in place"
+start hd-plain fail-migration hd-imported
+wait_state failed 300
+# replace the wallet while qtumd runs (it cannot load a legacy wallet, so the file is not open)
+in_box 'cp /package/data/other-wallet.dat /package/data/qtum/regtest/wallets/wallet.dat'
+LEGACY_SHA=$(legacy_sha)
+rebuild_ok hd-imported
+for a in $(jq -r '.keys[].addresses[0]' "$OUT/hd-plain.truth.json" | head -5); do
+    [ "$(cli -rpcwallet= getaddressinfo "$a" | jq -r .ismine)" = false ] || fail "the rebuilt wallet has keys of the saved copy"
+done
+in_box 'ls -d /package/data/wallet-backups/*-legacy-wallet-before-rebuild/wallet.dat' >/dev/null || fail "the wallet in place was not copied first"
+log_has 'the saved copy is not the wallet in place' || fail "the fresh copy is not logged"
+echo "ok   different wallet in place: copied first, the rebuilt wallet has its keys and not the saved copy's"
+no_secrets_in_log hd-imported
+stop
+
+echo "--- the new wallet cannot be closed: it is parked, the old wallet stays"
+start hd-plain fail-migration,unload-fails
+wait_state failed 300
+LEGACY_SHA=$(legacy_sha)
+monitor POST rebuild '{}' | grep -q started || fail "rebuild did not start"
+sleep 2
+wait_state 'failed|ready' 600
+[ "$(state)" = failed ] || fail "unload-fails: the new wallet was used"
+status | jq -r .message | grep -q 'could not be closed' || fail "unload-fails: $(status | jq -r .message)"
+[ "$(legacy_sha)" = "$LEGACY_SHA" ] || fail "unload-fails: the old wallet changed"
+in_box '! ls -d /package/data/qtum/regtest/wallets/rebuilt-* 2>/dev/null' || fail "unload-fails: the new wallet is still in the wallet directory"
+in_box 'ls -d /package/data/wallet-rebuild-failed/*/rebuilt-*/wallet.dat' >/dev/null || fail "unload-fails: the new wallet was not parked"
+cli getblockcount >/dev/null || fail "unload-fails: Qtum is not running"
+echo "ok   unload-fails: reported, new wallet parked, old wallet untouched, Qtum running"
+stop
+
+echo "--- stopped in the middle of the final swap: the next start finishes it"
+start hd-plain fail-migration,crash-during-swap
+wait_state failed 300
+LEGACY_SHA=$(legacy_sha)
+rebuild_ok hd-plain
+log_has 'crash-during-swap stops the monitor' || fail "crash-during-swap: the switch did not fire"
+log_has 'interrupted wallet rebuild was finished' || fail "crash-during-swap: the swap was not finished at start-up"
+echo "ok   crash-during-swap: the swap was finished at the next start"
+no_secrets_in_log hd-plain
 stop
 
 echo "PASS"
