@@ -1,26 +1,20 @@
-# Build Wizard
-FROM node:16-bullseye as wizard-builder
+# Build the Qtum Staking app of the shared AVADO Client UI
+# (https://github.com/AvadoDServer/AVADO-Client-UI, src/apps/qtum): the page
+# at qtum.my.ava.do. Exact Node patch tag so a rebuild of this release uses
+# the same toolchain; the UI source is pinned by its release tag below.
+FROM node:20.20.2-bookworm-slim AS ui
+# TODO(tag): set to the Client UI release tag with the Qtum app at release
+# (the branch name is only for local builds).
+ARG CLIENT_UI_VERSION=qtum-app
+ARG CLIENT_UI_REPO=https://github.com/AvadoDServer/AVADO-Client-UI
+RUN apt-get -y update && apt-get -y install --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch ${CLIENT_UI_VERSION} ${CLIENT_UI_REPO} /ui
+WORKDIR /ui
+RUN yarn install --frozen-lockfile && yarn build:qtum
 
-# Debian 11 (bullseye) reached its end of life on 2026-08-31. Its security
-# updates were removed from deb.debian.org, and the rest will follow. Use the
-# permanent locations instead: archive.debian.org for bullseye and
-# bullseye-updates (the same package lists as deb.debian.org), and the final
-# state of bullseye-security from snapshot.debian.org. The build fails if the
-# base image lists other sources.
-ARG DEBIAN_SECURITY_SNAPSHOT=20260831T000000Z
-RUN sed -i \
-        -e "s#^deb http://deb.debian.org/debian-security #deb http://snapshot.debian.org/archive/debian-security/${DEBIAN_SECURITY_SNAPSHOT} #" \
-        -e "s#^deb http://deb.debian.org/debian #deb http://archive.debian.org/debian #" \
-        /etc/apt/sources.list \
-    && ! grep -q "^deb http://deb.debian.org" /etc/apt/sources.list \
-    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot-valid-until
-RUN apt-get update && apt-get install -y openssl
-
-WORKDIR /package/wizard
-COPY wizard .
-RUN yarn install --frozen-lockfile
-RUN yarn build
-
+# Build Monitor
+FROM node:16-bullseye as monitor-builder
 WORKDIR /package/monitor
 COPY monitor .
 # yarn.lock = the dependency versions the 0.0.13 image shipped
@@ -103,10 +97,9 @@ RUN chmod +x /reload-certs.sh
 COPY files/crontab /etc/crontabs/root
 RUN chmod 644 /etc/crontabs/root
 
-# Copy monitor and wizard
-RUN mkdir -p /package/wizard
-COPY --from=wizard-builder /package/wizard/build /package/wizard
-COPY --from=wizard-builder /package/monitor /package/monitor
+# Copy monitor and the Qtum Staking app (served by nginx from /package/wizard)
+COPY --from=ui /ui/dist-qtum /package/wizard
+COPY --from=monitor-builder /package/monitor /package/monitor
 COPY --from=web-wallet-builder /package/wallet/dist /package/wallet
 
 # copy entrypoint
