@@ -1,0 +1,83 @@
+{
+  "note": "Regtest keys made by generate.sh; they hold no real coins.",
+  "passphrase": null,
+  "masterKey": null,
+  "hdseedid": null,
+  "keypoolsize": 0,
+  "balances": {
+    "trusted": 60000,
+    "untrusted_pending": 0,
+    "immature": 0,
+    "stake": 0
+  },
+  "labels": {
+    "qKrajcH4wqA7ggbnv9U3imxFmkQZ2omwx1": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "mPTd5USHW75vL2JpcqsH7r1w2aKn741qSd": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "qcrt1qryc06ru5aedy2ps2xnj9nc7apkexe50qtkat9l": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "qJNFbsG7BtzKzUr5MPucz5KWdGZte2ivs1": {
+      "label": "First",
+      "purpose": "receive"
+    },
+    "mJeKpR19VoekVHuEhRn493UkK1ZB9iufSt": {
+      "label": "First",
+      "purpose": "receive"
+    },
+    "qcrt1qprwnuadf0n6x2w8sndcpg04npgplnp42cr6jhv": {
+      "label": "First",
+      "purpose": "receive"
+    },
+    "qSErCX4MbDNHCBWSUDujAFamcAUvkgwyFk": {
+      "label": "Uncompressed",
+      "purpose": "receive"
+    }
+  },
+  "keys": [
+    {
+      "wif": "cUDdbWry5mnxb8tFjbAub5SbBbR21shp6TVt346S73jP7RrUyRfN",
+      "created": "1970-01-01T00:00:01Z",
+      "flags": {
+        "label": "First"
+      },
+      "addresses": [
+        "qJNFbsG7BtzKzUr5MPucz5KWdGZte2ivs1",
+        "mJeKpR19VoekVHuEhRn493UkK1ZB9iufSt",
+        "qcrt1qprwnuadf0n6x2w8sndcpg04npgplnp42cr6jhv"
+      ],
+      "hdkeypath": null
+    },
+    {
+      "wif": "cQaRwFoyqubCgdTiYAS8q7Bn1GNvTAkZ739o59W9T1F5K6dDzSGH",
+      "created": "1970-01-01T00:00:01Z",
+      "flags": {
+        "label": ""
+      },
+      "addresses": [
+        "qKrajcH4wqA7ggbnv9U3imxFmkQZ2omwx1",
+        "mPTd5USHW75vL2JpcqsH7r1w2aKn741qSd",
+        "qcrt1qryc06ru5aedy2ps2xnj9nc7apkexe50qtkat9l"
+      ],
+      "hdkeypath": null
+    },
+    {
+      "wif": "92ZxH5jUoNyfewReBwwBbiNknXzXGJcczBpmJYz95prHPQyuizC",
+      "created": "1970-01-01T00:00:01Z",
+      "flags": {
+        "label": "Uncompressed"
+      },
+      "addresses": [
+        "qSErCX4MbDNHCBWSUDujAFamcAUvkgwyFk"
+      ],
+      "hdkeypath": null
+    }
+  ],
+  "scripts": 2
+}

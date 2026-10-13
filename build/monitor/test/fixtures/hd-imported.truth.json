@@ -1,0 +1,562 @@
+{
+  "note": "Regtest keys made by generate.sh; they hold no real coins.",
+  "passphrase": null,
+  "masterKey": "tprv8ZgxMBicQKsPeZW6S84BZfZ3mbH67mNWYTbf35F9U8KNAHcLsL1kW6riCtdusSNzPBVCwwGoNPyr6x3yg9kNvNSDPnG9GZbysiS5GoV6Wg8",
+  "hdseedid": "1fbdf383dd6b90b662b67839245c19ccfd3a03e6",
+  "keypoolsize": 19,
+  "balances": {
+    "trusted": 160000,
+    "untrusted_pending": 0,
+    "immature": 0,
+    "stake": 0
+  },
+  "labels": {
+    "qTkArsHUa4e7oaZr4Zs7L7jwvDhnyz6kEn": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "qaQZLAiFPEaYrUAExuBPx2bgfDmKk3sqmi": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "qbWix97zKkBBpbiFNxmrnBKzR8H9rHnMdg": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "qfDrbTWLCHKUo9ixnjce7Yp55NRgxmtcwi": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "qYCZhoXyAp78j5AKJcoZgS7g4rU6axW5bT": {
+      "label": "Imported key",
+      "purpose": "receive"
+    },
+    "mf68c9hFzv2D4be3uEKGLfA91Tf1jQ3PZV": {
+      "label": "Imported key",
+      "purpose": "receive"
+    },
+    "qcrt1q5zvlf4645cfw34x2979x4ktq0p5p8q8m8jchlc": {
+      "label": "Imported key",
+      "purpose": "receive"
+    },
+    "qNPYvzaSkQeKxoXezcLLgz6AezGviWYyRJ": {
+      "label": "Old paper wallet",
+      "purpose": "receive"
+    },
+    "qQrjz9emV4jQcghn8QdNVfaQAUW47itxnG": {
+      "label": "Watched",
+      "purpose": "receive"
+    }
+  },
+  "keys": [
+    {
+      "wif": "cQyYZjrVd3Sfq93jQe8f96RHdQVJqiwK5ToKPzrKSG9RfNQNWKmU",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qJVXXHUok75GXJG59FVeNXCTVj8x9G3RdS"
+      ],
+      "hdkeypath": "m/88'/1'/8'"
+    },
+    {
+      "wif": "cNjnftMUcT1iwV7FUdjRofNxd7dWPjHBTWsjAQEQELGcifk5uNM4",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qJVzaK8w5yZAnHqNZ7dhWFx6VnKzGLC13B"
+      ],
+      "hdkeypath": "m/88'/1'/6'"
+    },
+    {
+      "wif": "cTyYKuYdn497y3Gvu2yAraGQmEoZtJUerJhvpEmBiZag3WRsxRq9",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qJaJ2LSjFhsTJRRMhScSDXoSfsexnmsqWN"
+      ],
+      "hdkeypath": "m/88'/1'/16'"
+    },
+    {
+      "wif": "cSzDm72TgLsQqht3qP5tKesmSwThFsPHRaN5x7aHR5TW6BgQYnSx",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qKWSiodkfBocLV6LxRKmj2EcQCQT1qQx7n"
+      ],
+      "hdkeypath": "m/88'/0'/20'"
+    },
+    {
+      "wif": "cPiujzXQXAKZ43mZr98YdZj77T4YS18ywp5BLS6GZkUeV5puKPb3",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qMm9u1pRuX7bptN4bTeJu1BDamCxMTmTaG"
+      ],
+      "hdkeypath": "m/88'/0'/18'"
+    },
+    {
+      "wif": "cSuJ7WdNc9fLxb5XwqbwmYQDzmmQLRAittXUPyGNveckJMxJvTdu",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qMxg58qsKZ4nuPq2DcAUDDsDWQrRjGZiwj"
+      ],
+      "hdkeypath": "m/88'/0'/14'"
+    },
+    {
+      "wif": "cSmjGSSBzoTqvJ6sbBdKGbLGN8Kz89ppWfLBPdDtpksaAjdqTCkb",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qN9XoT4XoXsYwTtF6J3VkUAkdAd9PUfrs9"
+      ],
+      "hdkeypath": "m/88'/1'/2'"
+    },
+    {
+      "wif": "91vnbRYB19NpYzoTvxuWkuv1N3fWj32tKeYppd3kUhky5Hc5Qko",
+      "created": "1970-01-01T00:00:01Z",
+      "flags": {
+        "label": "Old paper wallet"
+      },
+      "addresses": [
+        "qNPYvzaSkQeKxoXezcLLgz6AezGviWYyRJ"
+      ],
+      "hdkeypath": null
+    },
+    {
+      "wif": "cQQrxRxVYpoPGCFAtMR4zLqEEtzKrZ2q1uXtLbtFxHY3KNrN9RXA",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qPdi7uGXfsLB6aGeUkpPTucZskrVicDdcn"
+      ],
+      "hdkeypath": "m/88'/0'/17'"
+    },
+    {
+      "wif": "cR3zXCRgTz5FadcULDXcNizzQV2wNfjF7axAY8dn6XBGEyxPxB8h",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qPkC3Y8HQKhXqtmZaNoZ8mtTw9T9bELqeU"
+      ],
+      "hdkeypath": "m/88'/0'/6'"
+    },
+    {
+      "wif": "cPhy25GBqxQpv3omZtK4HfQj1mGBESHbPTTFJ35hVAAYjBFBni2R",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qRh5nEfHkPvM4JPPavKGSm8B5CWSeAyvCD"
+      ],
+      "hdkeypath": "m/88'/1'/9'"
+    },
+    {
+      "wif": "cNx3zq8BvnKDmY3JCg4QkZRJ1kb1FUXcddYCJDTR46uECtGEJKG9",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qRuXNCNw9NZYiPrE5DPaWModuCtNb2ePaG"
+      ],
+      "hdkeypath": "m/88'/0'/10'"
+    },
+    {
+      "wif": "cPGCJzKSAbvUymb5YVKFPAPtV2sjiTaT6BSYK5e2VBqkn1RuXLty",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qRweLDhw5EgHJLAeFj4kABcdQ7naKJzpkq"
+      ],
+      "hdkeypath": "m/88'/1'/13'"
+    },
+    {
+      "wif": "cNA3kft2MZ8ZPsqT4wrTD4LC6PU3Gdex9DsuJu19t6t5BNNna1u2",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qS86vvuGJ6dPyj7uHctxzzTs4EU6Fa7JZr"
+      ],
+      "hdkeypath": "m/88'/1'/0'"
+    },
+    {
+      "wif": "cP8t1j4JyF5GkRuEM97LGyzZKFEcigfx8h3WtZgaVFQqDuToPUop",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "label": ""
+      },
+      "addresses": [
+        "qTkArsHUa4e7oaZr4Zs7L7jwvDhnyz6kEn"
+      ],
+      "hdkeypath": "m/88'/0'/1'"
+    },
+    {
+      "wif": "cSv4sypkPwfkEpVaoewSuTPosZ5wumZfxjL21fzP2Dagxde56dAb",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qTkFdgioaAo6DKQB38Xc1wzCfqdKZCtzb9"
+      ],
+      "hdkeypath": "m/88'/1'/1'"
+    },
+    {
+      "wif": "cMy6V9JndKkZj6jk1N919ZEpZM7ErBWUjyCe3RAUcpRLfYLPJrdo",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qTuceb2aFJfpb8qLDL91nJHna8sn3Rih9v"
+      ],
+      "hdkeypath": "m/88'/0'/5'"
+    },
+    {
+      "wif": "cVeLncqEjxTAY3tJnn1EaFJsS8Q55X8SsSyYXV4h1ZomQqWksUH4",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qUpqupKskuL9VNtRg8jBqRCBpeTQVdgZWv"
+      ],
+      "hdkeypath": "m/88'/0'/9'"
+    },
+    {
+      "wif": "cUbovDUaHajViUxE1awUkx7mYqX7mZR8JMKvF3DuKwZxCfYrmVWK",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qVKXkzNGMzsLXLapeAsSFzLmM8chVWoLkC"
+      ],
+      "hdkeypath": "m/88'/0'/7'"
+    },
+    {
+      "wif": "cUyq1HZNRSK4uTM4GJRW1CZyBhVXNvt3eGjJVo1yaouRQEetR5r4",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qVWGqg13PA5byhvWuu7ufKRrQUdty9EBBy"
+      ],
+      "hdkeypath": "m/88'/1'/11'"
+    },
+    {
+      "wif": "cR9yRTh1Me9P7Eb2Un6UtcmjKpCEgXzCuF6t4MtStjACoMAQYGBG",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qVaSUfidMN3Dy5ZCr9yFQrvStgnWfPBAxJ"
+      ],
+      "hdkeypath": "m/88'/0'/21'"
+    },
+    {
+      "wif": "cQjYiQFdJZk4EibxDeqFarrJRpMEd3yZ6aHpxnkzdrmC35MEQyPZ",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qW14QQjijgNuMTgxfaYye3DRwVsyQ364JU"
+      ],
+      "hdkeypath": "m/88'/0'/4'"
+    },
+    {
+      "wif": "cNaiYD3uTFM9sd145vjBy5foQ5Tm3LWvRU1hjKk5RyXpJPyzJfs5",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qW21ijL4NoMwuLCYrYBEq2EMAjbaVGy7dS"
+      ],
+      "hdkeypath": "m/88'/1'/19'"
+    },
+    {
+      "wif": "cQHasigcnWhyCBNwj5fjtEoguQH7kuvY4DaabwuRaTGboitKLXUk",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qWCUde6T8w8rtbgRuiTXWoJatZ2tyQCKFh"
+      ],
+      "hdkeypath": "m/88'/0'/16'"
+    },
+    {
+      "wif": "cNvyGZaW8Uoq6fU6Apef4kE68qh1nDhxiAAAq7THcV3mRciGdG9r",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qWxaDvrhxDDNcdF5EiN9bswVq2a2soxs3z"
+      ],
+      "hdkeypath": "m/88'/1'/12'"
+    },
+    {
+      "wif": "cUu2dsFed9erBoyxqkPXQzjSUJHnnS2ppuCzQDXgFQJGA1W4Ujc6",
+      "created": "2026-10-13T13:42:56Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qX5fDwUZHGNAAjN7Wz8u4edvN7KxX44avg"
+      ],
+      "hdkeypath": "m/88'/0'/22'"
+    },
+    {
+      "wif": "cTKxRdADPVKCq9p3Zg8YBtqjz3ry5bpMdU1KLjyd9pGvApeLoP6y",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qY6wtw18tWFyeYfNq7xWWMfwnEgghRXqd4"
+      ],
+      "hdkeypath": "m/88'/1'/15'"
+    },
+    {
+      "wif": "cN1BtS5DoxjdxxPwDA84DLYg4JA9bmSp1UeZYPMzDS9DTxkK7fV9",
+      "created": "1970-01-01T00:00:01Z",
+      "flags": {
+        "label": "Imported key"
+      },
+      "addresses": [
+        "qYCZhoXyAp78j5AKJcoZgS7g4rU6axW5bT",
+        "mf68c9hFzv2D4be3uEKGLfA91Tf1jQ3PZV",
+        "qcrt1q5zvlf4645cfw34x2979x4ktq0p5p8q8m8jchlc"
+      ],
+      "hdkeypath": null
+    },
+    {
+      "wif": "cV6ZMFuLfjJvXyT9Lfxe3Hn2EDJPQCdmK2tspDTu1py1f9w266MS",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qYSX1iQfrDK6b17v9kxAnps6evEsEbbqUM"
+      ],
+      "hdkeypath": "m/88'/1'/3'"
+    },
+    {
+      "wif": "cUnQzAoxoGbG3vvyX5mEBfz9mX12vAHHFjPon8DJbUc1E8uftq8w",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qYhS4N4rsRN8ChautRytdrD3bhgxirYvq7"
+      ],
+      "hdkeypath": "m/88'/0'/13'"
+    },
+    {
+      "wif": "cPBMnNUahkJbpYkNNeBCe9DrYy35B6ws6ctqNRYZqwGAGeUrhdY8",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qYiYBX6NCqnMiHpbXfQNXeqXQkqncKoCD7"
+      ],
+      "hdkeypath": "m/88'/1'/5'"
+    },
+    {
+      "wif": "cNSfhe21FoUYPJQ4947nL2iVoK7Kohyi4NgZgydRLNU1pYb9TGG4",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qYyXWFegxYN6n85oUa27TPDfEgQarXh4uE"
+      ],
+      "hdkeypath": "m/88'/0'/19'"
+    },
+    {
+      "wif": "cUYqyP9wsBJNovFaNVHoDsTRAxaSDk82ZGNAAU9GEukRLt5Aa7Rw",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qZRXLrA91uc6VZP9LNrhJeSwRLQfafP5jf"
+      ],
+      "hdkeypath": "m/88'/1'/18'"
+    },
+    {
+      "wif": "cRJeiQctzEgWMNwZZgq3dHa4z39HLR6tdbbjpT1rA2BTgQitDFkD",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qa8js4ziiWCAK4rBDT9KGJzNaDEWnkLW1k"
+      ],
+      "hdkeypath": "m/88'/0'/11'"
+    },
+    {
+      "wif": "cNJt8jABjx821wVggsXyc2mBgf7CqGknFAEqh58MzzHED1yQRgp7",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qaFhjrPyXdU1xRoMhmRtV19Miph332LBq4"
+      ],
+      "hdkeypath": "m/88'/1'/14'"
+    },
+    {
+      "wif": "cTAkCQ6Y76mqSt2Jb1uwukg5d8PXasgCTYRNkPxUc9y2zjVWb87D",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qaGNvisMQaeXHSUUwN9q6Crdk1tqgBp2uj"
+      ],
+      "hdkeypath": "m/88'/1'/4'"
+    },
+    {
+      "wif": "cNkkokFDYkUw7CzwDqLKq6nDbkKqkBrT2SY9Goa2xoAaqzmA7c7w",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "label": ""
+      },
+      "addresses": [
+        "qaQZLAiFPEaYrUAExuBPx2bgfDmKk3sqmi"
+      ],
+      "hdkeypath": "m/88'/0'/0'"
+    },
+    {
+      "wif": "cRWihpCpidUYoChFuyoYpcVojGTzrMTTY5G3mYdQnLgBwrhCC84x",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "label": ""
+      },
+      "addresses": [
+        "qbWix97zKkBBpbiFNxmrnBKzR8H9rHnMdg"
+      ],
+      "hdkeypath": "m/88'/0'/2'"
+    },
+    {
+      "wif": "cTSHAEFUEChrVeQHHYCCuZkR4YuVPNo1z1UL5bakcojMjwHM6DRN",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qdePS4KQQgqPTbEk6W78FzeJM2rHdiPr3f"
+      ],
+      "hdkeypath": "m/88'/0'/8'"
+    },
+    {
+      "wif": "cRvFRcoQN2GqfLLQAJTBdCyiEdLo2NZTknsjdpysXvCWt8pvDG8V",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qeFzwAkPVPmVWu1dHvaYJx9kwvv3YsHyPA"
+      ],
+      "hdkeypath": "m/88'/1'/10'"
+    },
+    {
+      "wif": "cPDGnhkHaxnvFsBdjdiiFVQdqY7z5yPzZhT8XpS8or3kAXfD9NWz",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qeHNLBztUtDcmpTcZigJFhzumu3KJnv8Jo"
+      ],
+      "hdkeypath": "m/88'/1'/17'"
+    },
+    {
+      "wif": "cRjyZXX45y12getCXJj2pC1QbKmAuhN1M46SWXeUX8pXnyxmX3eG",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qeNxgiHhMyuRhoSoNMrcJh9DSvToPfAUmd"
+      ],
+      "hdkeypath": "m/88'/0'/12'"
+    },
+    {
+      "wif": "cVvTUJ6nzhkACDyMN7Cnn4uhLJGBGUf84sZkRWNiuVGdsdYpDVno",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qeVMWRNRQ2TZgmnTGJFYJD9FxgXKSyjQAJ"
+      ],
+      "hdkeypath": "m/88'/1'/7'"
+    },
+    {
+      "wif": "cTmVZdyLzU4JJyHd4neXddvigENAjQWsnD8VGUKGt9knkhYdqMwa",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "hdseed": "1"
+      },
+      "addresses": [
+        "qeXaSc9mpkWwLim7tG3AQu2TKTbfsQS3sm"
+      ],
+      "hdkeypath": null
+    },
+    {
+      "wif": "cNuV6v2HdThVrtYJ5babAndBC7BFVD4YzJRLrU6GLRJDF8Jd2eoN",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "label": ""
+      },
+      "addresses": [
+        "qfDrbTWLCHKUo9ixnjce7Yp55NRgxmtcwi"
+      ],
+      "hdkeypath": "m/88'/0'/3'"
+    },
+    {
+      "wif": "cVDuYpwEY6Hpot5tQcAEYAMh9nnNdHEkAqChHMVyG1tj8y6LsMjo",
+      "created": "2026-10-13T13:42:55Z",
+      "flags": {
+        "reserve": "1"
+      },
+      "addresses": [
+        "qgimp1BJTnTLbbyNrfPpN8GiTEjVKZw24u"
+      ],
+      "hdkeypath": "m/88'/0'/15'"
+    }
+  ],
+  "scripts": 45
+}

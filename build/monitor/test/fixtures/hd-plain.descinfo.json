@@ -1,0 +1,15 @@
+[
+{"descriptor":"combo(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/0h/0h/*h)#22cu5jma","checksum":"9lc3hwzq"}
+,{"descriptor":"combo(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/0h/1h/*h)#6vjdyzwy","checksum":"4ejq87he"}
+,{"descriptor":"pkh(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/44h/88h/0h/0/*)#mplxgasp","checksum":"9y8geexd"}
+,{"descriptor":"sh(wpkh(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/49h/88h/0h/0/*))#k6fjrvlt","checksum":"4pymsy9g"}
+,{"descriptor":"wpkh(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/84h/88h/0h/0/*)#9fe7e22l","checksum":"jszn76ae"}
+,{"descriptor":"tr(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/86h/88h/0h/0/*)#dj9f3xg3","checksum":"shw6utrk"}
+,{"descriptor":"pk(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/44h/88h/0h/0/*)#xm6puufm","checksum":"m73j33zu"}
+,{"descriptor":"pkh(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/44h/88h/0h/1/*)#24684gqe","checksum":"5szfyvk4"}
+,{"descriptor":"sh(wpkh(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/49h/88h/0h/1/*))#rm8ymn25","checksum":"qq2dgmsh"}
+,{"descriptor":"wpkh(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/84h/88h/0h/1/*)#5aulyl68","checksum":"ry8jr0dp"}
+,{"descriptor":"tr(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/86h/88h/0h/1/*)#uxqgvncf","checksum":"prtmp7nw"}
+,{"descriptor":"pk(tpubD6NzVbkrYhZ4XyKqvc8bLy6eQh17g65yXsWuVgD6iyyHxwhJZK2FQh4S1yK6HQ1PXBqfqpsvyqhjfvQkDJGYZRV19mvFmYtvsD1ih597coa/44h/88h/0h/1/*)#h0lqpfer","checksum":"225nvyjy"}
+,{"descriptor":"combo(0334b082dbf3b2cc4e021cf7bbe6ad41ccabd26eb4405d346e5e60a42b231554b9)#7f9nra6w","checksum":"e3004m0y"}
+]
