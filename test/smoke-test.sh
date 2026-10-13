@@ -31,6 +31,16 @@ rpc() { # method [params]: result, or fail
 monitor() { # method path [json]: body, with the header the wizard sends
     docker exec "$NAME" curl -s -X "$1" "http://127.0.0.1/monitor/$2" -H 'Content-Type: application/json' -H 'X-Qtum-Wizard: 1' ${3:+-d "$3"}
 }
+# the node's own command line tool (for slow calls nginx would time out)
+cli() { docker exec "$NAME" qtum-cli -regtest -rpcport=3889 -rpcuser=avado -rpcpassword=avado1234 "$@"; }
+# the coins the wallet staked itself: Qtum v30 lists each such coinstake as a
+# "send" of 0 whose fee is the (positive) reward
+own_stakes() {
+    local out
+    out=$(cli -rpcwallet= listtransactions "*" 500 0 true 2>/dev/null \
+        | jq -c '[.[] | select(.category == "send" and .generated == true and .fee > 0 and .confirmations > 0)]' 2>/dev/null || true)
+    echo "${out:-[]}"
+}
 field() { sed -E "s/.*\"$1\":\"?([^\",}]*)\"?.*/\1/"; }
 
 docker volume create "$VOLUME" >/dev/null
@@ -168,7 +178,7 @@ for wizard in http://qtum.my.ava.do https://qtum.my.ava.do; do
     check 403 no "$(from $over://evil.example POST $wizard/monitor/restartQtum)" "$over: monitor restartQtum from another web site is refused"
     check 200 no "$(from $wizard POST $wizard/monitor/setenv "$fee")" "$over: monitor setenv from the wizard's own page"
     check 200 yes "$(from $over://evil.example GET $wizard/monitor/walletstatus)" "$over: monitor walletstatus stays readable from other pages"
-    check 403 no "$(from $over://evil.example GET $wizard/ws)" "$over: /ws (the connection to the AVADO) from another web site is refused"
+    check 403 no "$(from $over://evil.example POST $wizard/monitor/uploadbackup)" "$over: monitor uploadbackup from another web site is refused"
 done
 # the page opened over one scheme cannot use the other one
 check 403 no "$(from http://qtum.my.ava.do POST https://qtum.my.ava.do/rpc "$getblockcount")" "/rpc over https from the http page is refused"
@@ -177,4 +187,51 @@ check 403 no "$(from https://qtum.my.ava.do POST http://qtum.my.ava.do/rpc "$get
 curlq -X POST https://qtum.my.ava.do:8443/rpc -H 'Content-Type: application/json' -d "$getblockcount" | grep -q '"result"' \
     && fail "https://qtum.my.ava.do:8443/rpc answers RPC calls"
 echo "ok   the Qtum Web Wallet's address has no /rpc"
+# 0.0.17 no longer passes /ws on to the AVADO's WAMP (nothing uses it): the
+# address is the app's page now
+curlq -H 'Upgrade: websocket' -H 'Connection: Upgrade' http://qtum.my.ava.do/ws | grep -q '<title>AVADO Qtum Staking</title>' \
+    || fail "/ws still reaches something else than the app"
+echo "ok   /ws no longer reaches WAMP"
+# only the upload route takes a large body
+code=$(docker exec "$NAME" sh -c 'head -c 2000000 /dev/zero | curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1/monitor/setenv -H "Content-Type: application/json" --data-binary @-')
+[ "$code" = 413 ] || fail "a 2 MB body to setenv answered $code, not 413"
+code=$(docker exec "$NAME" curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1/monitor/uploadbackup -H 'X-Qtum-Wizard: 1' -d 'x')
+[ "$code" = 415 ] || fail "an upload that is not a file answered $code, not 415"
+echo "ok   large bodies only on the upload route; the upload takes files only"
+
+# Proof of stake: rewards for coins the wallet staked itself. Qtum v30 lists
+# such a coinstake as a "send" of 0 with the reward as a positive fee; the
+# staking summary must count it. 2010 blocks make coins old enough to stake;
+# after a restart the regtest node stakes them within a few minutes.
+echo "mining 2010 blocks so that the wallet can stake"
+cli generatetoaddress 2010 "$address" >/dev/null
+# the summary and the wallet's own stakes, read while no new stake came in
+read_both() { # -> sets summary, stakes
+    for _ in 1 2 3 4 5; do
+        local s1
+        s1=$(own_stakes)
+        summary=$(monitor GET staking-summary)
+        stakes=$(own_stakes)
+        [ "$(echo "$s1" | jq length)" = "$(echo "$stakes" | jq length)" ] && return 0
+    done
+    fail "the wallet kept staking while the summary was read"
+}
+read_both
+before=$summary
+before_stakes=$stakes
+monitor POST restartQtum >/dev/null
+for i in $(seq 1 90); do
+    sleep 10
+    [ "$(own_stakes | jq length)" -gt "$(echo "$before_stakes" | jq length)" ] && break
+done
+read_both
+new_stakes=$(jq -n --argjson a "$stakes" --argjson b "$before_stakes" '($a | length) - ($b | length)')
+[ "$new_stakes" -ge 1 ] || fail "the wallet did not stake within 15 minutes"
+earned=$(jq -n --argjson a "$stakes" --argjson b "$before_stakes" '($a | map(.fee) | add) - (($b | map(.fee) | add) // 0)')
+counted=$(jq -n --argjson a "$summary" --argjson b "$before" '$a.countAll - $b.countAll')
+gained=$(jq -n --argjson a "$summary" --argjson b "$before" '$a.totalRewards - $b.totalRewards')
+[ "$counted" = "$new_stakes" ] || fail "staking summary counted $counted new rewards, the wallet staked $new_stakes times: $summary"
+jq -n --argjson g "$gained" --argjson e "$earned" '$e > 0 and (($g - $e) | fabs) < 0.00000001' | grep -q true \
+    || fail "staking summary gained $gained QTUM, the stakes earned $earned: $summary"
+echo "ok   proof of stake: $new_stakes stake(s) of the wallet's own coins counted, $earned QTUM earned (Total earned grew by it)"
 echo "PASS"

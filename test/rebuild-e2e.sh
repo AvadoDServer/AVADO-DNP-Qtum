@@ -72,7 +72,10 @@ start() { # wallet hooks [another wallet, copied to /package/data/other-wallet.d
         cp -R /src/regtest/blocks /src/regtest/chainstate /src/regtest/stateQtum /package/data/qtum/regtest/
         cp /src/regtest/wallets/$1/wallet.dat /package/data/qtum/regtest/wallets/wallet.dat
         [ -z '${3:-}' ] || cp /src/regtest/wallets/${3:-none}/wallet.dat /package/data/other-wallet.dat"
-    docker run -d --name "$NAME" --platform linux/amd64 -e "EXTRA_OPTS=-regtest -rpcport=3889" \
+    # -staking=0: the package's qtumd would stake a mature regtest coin right after
+    # start (it runs with -superstaking), moving it into getbalances.mine.stake
+    # at a random moment, which the balance checks do not count.
+    docker run -d --name "$NAME" --platform linux/amd64 -e "EXTRA_OPTS=-regtest -rpcport=3889 -staking=0" \
         -e "QTUM_MONITOR_TEST_HOOKS=$2" -v "$VOLUME:/package/data" "$IMAGE" >/dev/null
 }
 
