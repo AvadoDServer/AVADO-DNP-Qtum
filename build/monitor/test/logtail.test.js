@@ -48,4 +48,6 @@ test("hides anything that could be a key: WIF keys, extended keys, 64 hex digits
     const out = readLog(file, "10");
     assert.deepStrictEqual(out, ["wallet key [key]", "import [key]", "raw [key] done", "address QgHkG8Ffz6wfBDoQXQdEYvJbkmCkcyzMnb kept"]);
     assert.strictEqual(scrub(`x ${wif}`), "x [key]");
+    // a block hash that starts with hex digits base58 does not have is hidden whole
+    assert.strictEqual(scrub("new best=665ed5b402ac0a1b2c3d4e5f60718293a4b5c6d7e8f90112233445566778899aa height=0"), "new best=[key] height=0");
 });

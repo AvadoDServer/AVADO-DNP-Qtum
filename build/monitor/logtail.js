@@ -13,9 +13,10 @@ const MAX_BYTES = 4 * 1024 * 1024;
 // Long base58 or hex strings could be keys (a WIF private key, an extended
 // key, a raw private key): hide them. The monitor uses this for every error
 // message and log line it passes on.
+// (Hex first, so that a whole block hash becomes one "[key]".)
 const scrub = (message) => String(message)
-    .replace(/[1-9A-HJ-NP-Za-km-z]{50,}/g, "[key]")
-    .replace(/[0-9a-fA-F]{64,}/g, "[key]");
+    .replace(/[0-9a-fA-F]{64,}/g, "[key]")
+    .replace(/[1-9A-HJ-NP-Za-km-z]{50,}/g, "[key]");
 
 // The number of lines asked for: a whole number from 1 to MAX_LINES, else the default
 const lineCount = (value) => {

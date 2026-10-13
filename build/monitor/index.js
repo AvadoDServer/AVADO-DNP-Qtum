@@ -1558,12 +1558,38 @@ server.post("/backup", wizardOnly, async (req, res) => {
 // place the wizard used to copy it to over WAMP. /restore then restores it.
 const UPLOAD_NAME = "wallet-upload.dat";
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+const TOO_LARGE = "This file is too large to be a Qtum wallet backup.";
+// The file itself (restify's body parser leaves application/octet-stream unread)
+const readUpload = (req, max) => new Promise((resolve, reject) => {
+    if (Buffer.isBuffer(req.body) && req.body.length > 0) {
+        resolve(req.body);
+        return;
+    }
+    const chunks = [];
+    let size = 0;
+    let failed = false;
+    req.on("data", (chunk) => {
+        if (failed) return;
+        size += chunk.length;
+        if (size > max) {
+            failed = true;
+            reject(new UserError(TOO_LARGE, 413));
+            return;
+        }
+        chunks.push(chunk);
+    });
+    req.on("end", () => {
+        if (!failed) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (err) => {
+        if (!failed) reject(err);
+    });
+});
 server.post("/uploadbackup", wizardOnly, async (req, res) => {
     try {
-        const body = req.body;
-        if (!Buffer.isBuffer(body) || body.length === 0) throw new UserError("No file was sent. Please choose your wallet backup file again.");
-        if (body.length > MAX_UPLOAD_BYTES) throw new UserError("This file is too large to be a Qtum wallet backup.", 413);
         if (busy || importRunning()) throw new UserError(BUSY_MESSAGE, 409);
+        const body = await readUpload(req, MAX_UPLOAD_BYTES);
+        if (body.length === 0) throw new UserError("No file was sent. Please choose your wallet backup file again.");
         fs.mkdirSync(RESTORE_DIR, { recursive: true });
         const target = path.join(RESTORE_DIR, UPLOAD_NAME);
         const tmp = `${target}.${crypto.randomBytes(6).toString("hex")}.part`;
