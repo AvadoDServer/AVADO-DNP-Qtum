@@ -9,8 +9,18 @@ import { RequestManager, HTTPTransport, Client } from "@open-rpc/client-js";
 import "./Dashboard.css";
 import monitor from "../../../util/monitor";
 
-const url = "ws://wamp.my.ava.do:8080/ws";
+// The connection to your AVADO (WAMP), used to download and restore wallet
+// backups. A page opened over https may only open a secure (wss://)
+// connection, so over https the wizard connects to its own address and nginx
+// passes it on to WAMP.
+const url = window.location.protocol === "https:"
+    ? `wss://${window.location.host}/ws`
+    : "ws://wamp.my.ava.do:8080/ws";
 const realm = "dappnode_admin";
+
+// The Qtum Web Wallet was at https://qtum.my.ava.do until package 0.0.14
+const webWalletAddress = "https://qtum.my.ava.do:8443";
+const webWalletUrl = `${webWalletAddress}/`;
 
 
 const Comp = () => {
@@ -101,7 +111,7 @@ const Comp = () => {
                     <a href="http://my.ava.do/#/Packages/qtum.avado.dnp.dappnode.eth/detail" target="_blank">show node logs</a>
                     <br />
                     <br />
-                    <a href="https://qtum.my.ava.do/" className="button" target="_blank">Open Wallet UI</a>
+                    <a href={webWalletUrl} className="button" target="_blank" rel="noopener noreferrer">Qtum Web Wallet (advanced)</a>
                 </div>
 
                 <div className="setting">
@@ -158,6 +168,9 @@ const Comp = () => {
                     </div>
                 </div>
                 <p className="">A node and wallet for interacting with the Qtum network</p>
+                <p className="is-size-7" style={{ marginTop: 5 }}>
+                    The Qtum Web Wallet moved to a new address: <a href={webWalletUrl} target="_blank" rel="noopener noreferrer">Qtum Web Wallet (advanced)</a> ({webWalletAddress})
+                </p>
                 <WalletStatusBanner rpcClient={rpcClient} session={wampSession} />
             </section>
             <br />

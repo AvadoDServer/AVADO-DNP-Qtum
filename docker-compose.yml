@@ -1,7 +1,7 @@
 version: '3.4'
 services:
   qtum.avado.dnp.dappnode.eth:
-    image: 'qtum.avado.dnp.dappnode.eth:0.0.14'
+    image: 'qtum.avado.dnp.dappnode.eth:0.0.15'
     build:
       context: ./build
       args:
@@ -19,6 +19,7 @@ services:
       - '13889:13889'
       - '80:80'
       - '443:443'
+      - '8443:8443'
     logging:
       options:
         max-size: 10m
