@@ -12,9 +12,35 @@ const NAMES = ["hd-plain", "hd-encrypted", "hd-imported", "nonhd"];
 const read = (name, ext) => fs.readFileSync(path.join(FIXTURES, `${name}.${ext}`), "utf8");
 const truth = (name) => JSON.parse(read(name, "truth.json"));
 const dump = (name) => read(name, "dump");
-const load = (name) => lw.readLegacyWallet(lw.parseDump(dump(name)).records, truth(name).passphrase);
+const load = (name) => {
+    const parsed = lw.parseDump(dump(name));
+    return lw.readLegacyWallet(parsed.records, truth(name).passphrase, parsed.counts);
+};
 const wifs = (wallet) => wallet.keys.map((k) => qtumkeys.encodeWif(k.secret, 0xef, k.compressed)).sort();
 const stripOrigin = (desc) => desc.split("#")[0].replace(/\[[0-9a-f]{8}[^\]]*\]/g, "");
+
+test("parseDump keeps only the records the rebuild reads, and counts all", () => {
+    const parsed = lw.parseDump(dump("hd-plain"));
+    assert.ok(parsed.counts.tx > 0);
+    assert.ok(!parsed.records.has("tx"));
+    assert.ok(parsed.records.has("key") && parsed.records.has("keymeta") && parsed.records.has("hdchain"));
+});
+
+test("parseDumpFile gives the same result as parseDump", async () => {
+    for (const name of NAMES) {
+        const fromFile = await lw.parseDumpFile(path.join(FIXTURES, `${name}.dump`));
+        const fromText = lw.parseDump(dump(name));
+        assert.deepStrictEqual(fromFile.counts, fromText.counts);
+        assert.deepStrictEqual(fromFile.records, fromText.records);
+    }
+    const tmp = path.join(require("os").tmpdir(), `qtum-dump-test-${process.pid}`);
+    fs.writeFileSync(tmp, dump("hd-plain").replace(/checksum,[0-9a-f]+/, "checksum,00"));
+    await assert.rejects(lw.parseDumpFile(tmp), (e) => e.code === "bad-dump");
+    fs.writeFileSync(tmp, dump("hd-plain").split("\n").slice(0, 20).join("\n"));
+    await assert.rejects(lw.parseDumpFile(tmp), (e) => e.code === "bad-dump");
+    fs.unlinkSync(tmp);
+    await assert.rejects(lw.parseDumpFile(tmp), (e) => e.code === "bad-dump");
+});
 
 test("parseDump reads every record and checks the checksum", () => {
     NAMES.forEach((name) => {
@@ -169,6 +195,24 @@ test("descriptor ranges cover every used key plus a margin; rescan starts a day 
     descriptors.forEach((d) => assert.strictEqual(d.timestamp, Math.max(1500000000, oldest - 86400)));
     assert.strictEqual(lw.rescanTimestamp({ keys: [{ createTime: 0 }] }), 1500000000);
     assert.strictEqual(lw.rescanTimestamp({ keys: [{ createTime: 1400000000 }] }), 1500000000);
+});
+
+test("a key without a creation time makes the rescan start at the beginning", () => {
+    const wallet = load("hd-plain");
+    const recent = Math.min.apply(null, wallet.keys.map((k) => k.createTime));
+    assert.ok(recent > 1600000000);
+    assert.strictEqual(lw.rescanTimestamp(wallet), recent - 86400);
+    // no key metadata at all for one key (createTime 0), or importprivkey's "unknown" (1)
+    [0, 1].forEach((unknown) => {
+        const copy = { keys: wallet.keys.map((k, i) => Object.assign({}, k, { createTime: i === 3 ? unknown : k.createTime })) };
+        assert.strictEqual(lw.rescanTimestamp(copy), 1500000000);
+        lw.buildDescriptors(Object.assign({}, wallet, copy), "regtest").forEach((d) => assert.strictEqual(d.timestamp, 1500000000));
+    });
+    // a wallet whose keymeta records are gone entirely
+    const parsed = lw.parseDump(dump("hd-plain"));
+    const records = new Map(parsed.records);
+    records.delete("keymeta");
+    assert.strictEqual(lw.rescanTimestamp(lw.readLegacyWallet(records, null)), 1500000000);
 });
 
 test("mainnet: Q addresses, 0x80 WIF keys, xprv", () => {

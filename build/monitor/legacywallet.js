@@ -18,10 +18,12 @@
 // Qtum's legacy HD keys are labelled m/88'/c'/i' but derived at m/0'/c'/i'
 // (LegacyScriptPubKeyMan::DeriveNewChildKey).
 //
-// Pure functions, Node built-ins only, Node 12 compatible. Nothing here logs:
-// the results hold private keys.
+// Pure functions (parseDumpFile reads one file), Node built-ins only, Node 12
+// compatible. Nothing here logs: the results hold private keys.
 
 const crypto = require("crypto");
+const fs = require("fs");
+const readline = require("readline");
 const qtumkeys = require("./qtumkeys");
 
 const HARDENED = 0x80000000;
@@ -102,57 +104,122 @@ class Reader {
 // Dump file (wallet/dump.cpp: DumpWallet)
 // ---------------------------------------------------------------------------
 
-/**
- * Parse the output of `qtum-wallet dump`.
- * @param {string} text
- * @returns {{format: string, records: Map<string, Array<{key: Buffer, value: Buffer}>>, counts: Object}}
- */
-function parseDump(text) {
-    const bad = (why) => new LegacyWalletError(`The old wallet could not be read (${why}).`, "bad-dump");
-    const lines = String(text).split("\n");
-    if (lines.length && lines[lines.length - 1] === "") lines.pop();
-    if (lines[0] !== `${DUMP_MAGIC},1`) throw bad("unknown dump format");
-    const hasher = crypto.createHash("sha256");
-    let format = null;
-    let checksum = null;
-    const records = new Map();
-    const counts = {};
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+// The record types the rebuild reads. Every other record (transactions above
+// all: a staking wallet has tens of thousands) is only counted, so that a dump
+// of hundreds of MB can be read with little memory.
+const KEPT_TYPES = ["key", "ckey", "mkey", "hdchain", "keymeta", "name", "purpose", "defaultkey"];
+
+const badDump = (why) => new LegacyWalletError(`The old wallet could not be read (${why}).`, "bad-dump");
+
+// Reads the dump line by line; the checksum is computed as the lines come.
+class DumpParser {
+    constructor() {
+        this.hasher = crypto.createHash("sha256");
+        this.lineNo = 0;
+        this.format = null;
+        this.checksum = null;
+        this.records = new Map();
+        this.counts = {};
+    }
+
+    line(line) {
+        if (this.checksum !== null) {
+            if (line === "") return;
+            throw badDump("data after the checksum");
+        }
+        const i = this.lineNo++;
+        if (i === 0) {
+            if (line !== `${DUMP_MAGIC},1`) throw badDump("unknown dump format");
+            this.hasher.update(`${line}\n`, "utf8");
+            return;
+        }
         const comma = line.indexOf(",");
-        if (comma < 0) throw bad("malformed line");
+        if (comma < 0) throw badDump("malformed line");
         const k = line.slice(0, comma);
         const v = line.slice(comma + 1);
         if (k === "checksum") {
-            if (i !== lines.length - 1) throw bad("data after the checksum");
-            checksum = v;
-            break;
+            this.checksum = v;
+            return;
         }
-        hasher.update(`${line}\n`, "utf8");
-        if (i === 0) continue;
+        this.hasher.update(`${line}\n`, "utf8");
         if (i === 1) {
-            if (k !== "format") throw bad("missing format line");
-            format = v;
-            continue;
+            if (k !== "format") throw badDump("missing format line");
+            this.format = v;
+            return;
         }
-        if (!/^([0-9a-f]{2})+$/.test(k) || !/^([0-9a-f]{2})*$/.test(v)) throw bad("malformed record");
-        const key = Buffer.from(k, "hex");
-        const value = Buffer.from(v, "hex");
-        let type;
-        try {
-            type = new Reader(key, "record").string();
-        } catch (e) {
-            throw bad("malformed record key");
-        }
-        if (!records.has(type)) records.set(type, []);
-        records.get(type).push({ key, value });
-        counts[type] = (counts[type] || 0) + 1;
+        if (!/^([0-9a-f]{2})+$/.test(k) || !/^([0-9a-f]{2})*$/.test(v)) throw badDump("malformed record");
+        // record key = CompactSize length + type name + type-specific data
+        const typeLength = parseInt(k.slice(0, 2), 16);
+        if (typeLength >= 253 || k.length < 2 + 2 * typeLength) throw badDump("malformed record key");
+        const type = Buffer.from(k.slice(2, 2 + 2 * typeLength), "hex").toString("latin1");
+        this.counts[type] = (this.counts[type] || 0) + 1;
+        if (KEPT_TYPES.indexOf(type) < 0) return;
+        if (!this.records.has(type)) this.records.set(type, []);
+        this.records.get(type).push({ key: Buffer.from(k, "hex"), value: Buffer.from(v, "hex") });
     }
-    if (checksum === null) throw bad("the dump is incomplete");
-    const computed = sha256(hasher.digest()).toString("hex");
-    if (computed !== checksum) throw bad("checksum mismatch");
-    if (format !== "bdb") throw bad(`unexpected wallet format ${format}`);
-    return { format, records, counts };
+
+    finish() {
+        if (this.checksum === null) throw badDump("the dump is incomplete");
+        const computed = sha256(this.hasher.digest()).toString("hex");
+        if (computed !== this.checksum) throw badDump("checksum mismatch");
+        if (this.format !== "bdb") throw badDump(`unexpected wallet format ${this.format}`);
+        return { format: this.format, records: this.records, counts: this.counts };
+    }
+}
+
+/**
+ * Parse the output of `qtum-wallet dump` held in a string (small dumps, tests).
+ * @param {string} text
+ * @returns {{format: string, records: Map<string, Array<{key: Buffer, value: Buffer}>>, counts: Object}}
+ *   records: only the types the rebuild reads; counts: every type
+ */
+function parseDump(text) {
+    const parser = new DumpParser();
+    const lines = String(text).split("\n");
+    if (lines.length && lines[lines.length - 1] === "") lines.pop();
+    lines.forEach((line) => parser.line(line));
+    return parser.finish();
+}
+
+/**
+ * Parse a dump file line by line (any size, little memory).
+ * @param {string} file
+ * @returns {Promise} same result as parseDump
+ */
+function parseDumpFile(file) {
+    return new Promise((resolve, reject) => {
+        const parser = new DumpParser();
+        const input = fs.createReadStream(file, { encoding: "utf8", highWaterMark: 1024 * 1024 });
+        const rl = readline.createInterface({ input, crlfDelay: Infinity });
+        let failed = false;
+        const fail = (err) => {
+            if (failed) return;
+            failed = true;
+            rl.close();
+            input.destroy();
+            reject(err);
+        };
+        // newer Node versions pass the stream's error on to the interface
+        input.on("error", () => fail(badDump("the dump could not be read")));
+        rl.on("error", () => fail(badDump("the dump could not be read")));
+        rl.on("line", (line) => {
+            if (failed) return;
+            try {
+                parser.line(line);
+            } catch (err) {
+                fail(err);
+            }
+        });
+        rl.on("close", () => {
+            if (failed) return;
+            try {
+                resolve(parser.finish());
+            } catch (err) {
+                failed = true;
+                reject(err);
+            }
+        });
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -265,12 +332,15 @@ const NULL_ID = Buffer.alloc(20).toString("hex");
  * Read every key of a legacy wallet.
  * @param {Map} records from parseDump
  * @param {string|null} passphrase for an encrypted wallet
+ * @param {Object} [allCounts] counts of every record type, from parseDump
  * @returns {{encrypted, hd, seeds, keys, labels, unsupported, counts, derivedMissing}}
  */
-function readLegacyWallet(records, passphrase) {
+function readLegacyWallet(records, passphrase, allCounts) {
     const get = (type) => records.get(type) || [];
+    // counts of every record type (parseDump only keeps some of them)
     const counts = {};
-    records.forEach((list, type) => { counts[type] = list.length; });
+    if (allCounts) Object.keys(allCounts).forEach((type) => { counts[type] = allCounts[type]; });
+    else records.forEach((list, type) => { counts[type] = list.length; });
 
     // plain keys
     const keys = new Map(); // pubkey hex -> key
@@ -501,10 +571,12 @@ function encodeExtendedPrivateKey(node, version) {
     return qtumkeys.base58CheckEncode(payload);
 }
 
-// Rescan start: one day before the oldest key, never before Qtum existed
+// Rescan start: one day before the oldest key, never before Qtum existed. A
+// key without a creation time (no metadata, or 1 = "unknown", as importprivkey
+// writes) may have coins from any time: then the whole chain is scanned.
 function rescanTimestamp(wallet) {
-    const times = wallet.keys.map((k) => k.createTime).filter((t) => t > 0);
-    if (times.length === 0) return MIN_TIMESTAMP;
+    const times = wallet.keys.map((k) => k.createTime);
+    if (times.length === 0 || times.some((t) => !(t > 1))) return MIN_TIMESTAMP;
     return Math.max(MIN_TIMESTAMP, Math.min.apply(null, times) - 86400);
 }
 
@@ -616,6 +688,7 @@ function summary(wallet, descriptors) {
 module.exports = {
     LegacyWalletError,
     parseDump,
+    parseDumpFile,
     readLegacyWallet,
     buildDescriptors,
     expectedAddresses,

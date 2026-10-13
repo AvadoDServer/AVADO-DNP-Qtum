@@ -7,5 +7,6 @@ const lw = require("../../legacywallet");
 
 const [dumpFile, passphraseFile] = process.argv.slice(2);
 const passphrase = passphraseFile ? fs.readFileSync(passphraseFile, "utf8") : null;
-const wallet = lw.readLegacyWallet(lw.parseDump(fs.readFileSync(dumpFile, "utf8")).records, passphrase);
+const parsed = lw.parseDump(fs.readFileSync(dumpFile, "utf8"));
+const wallet = lw.readLegacyWallet(parsed.records, passphrase, parsed.counts);
 process.stdout.write(JSON.stringify(lw.buildDescriptors(wallet, "regtest")));
