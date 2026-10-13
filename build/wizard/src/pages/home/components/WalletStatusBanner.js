@@ -3,12 +3,14 @@ import monitor from "../../../util/monitor";
 import DownloadBackup from "./DownloadBackup";
 
 // Shows what the package is doing with the wallet (upgrade to the Qtum v30
-// wallet format, restore) and asks for a fresh backup after an upgrade.
+// wallet format, rebuild from the old copy when the upgrade fails, restore)
+// and asks for a fresh backup after an upgrade.
 const Comp = ({ rpcClient, session }) => {
     const [status, setStatus] = React.useState(undefined);
     const [passphrase, setPassphrase] = React.useState("");
     const [actionMessage, setActionMessage] = React.useState(undefined);
     const [showDetails, setShowDetails] = React.useState(false);
+    const [confirmRebuild, setConfirmRebuild] = React.useState(false);
     const [restoreDismissed, setRestoreDismissed] = React.useState(false);
     const lastRestoreAt = React.useRef(undefined);
 
@@ -45,6 +47,19 @@ const Comp = ({ rpcClient, session }) => {
         }
     };
 
+    const rebuild = async (withPassphrase) => {
+        setActionMessage(undefined);
+        setConfirmRebuild(false);
+        try {
+            await monitor.rebuildWallet(withPassphrase ? passphrase : undefined);
+            setPassphrase("");
+            setActionMessage("Rebuilding your wallet...");
+            refresh();
+        } catch (err) {
+            setActionMessage(monitor.errorMessage(err, "The rebuild could not be started. Please try again."));
+        }
+    };
+
     if (!status) return null;
 
     const restoreFailed = status.restore && status.restore.state === "failed" && !restoreDismissed ? (
@@ -74,6 +89,19 @@ const Comp = ({ rpcClient, session }) => {
         ));
     }
 
+    if (status.state === "rebuilding") {
+        const step = status.rebuild && status.rebuild.step;
+        const progress = status.rebuild && typeof status.rebuild.progress === "number" ? `: ${status.rebuild.progress} %` : "";
+        return box("is-info", (
+            <>
+                <p><b>Rebuilding your wallet from the copy of your old wallet.</b> This can take a few hours.
+                    Your old wallet stays on your AVADO, so your coins are safe.
+                    {encrypted ? "" : " Staking starts again by itself when it is done."}</p>
+                {step && <p style={{ marginTop: 10 }}>{step}{progress}</p>}
+            </>
+        ));
+    }
+
     if (status.state === "restoring") {
         return box("is-info", (
             <p><b>Restoring your wallet backup.</b> This takes a few minutes. Your previous wallet was saved on your AVADO first.</p>
@@ -81,13 +109,16 @@ const Comp = ({ rpcClient, session }) => {
     }
 
     if (status.state === "needs-passphrase") {
+        // the password was asked for by a rebuild, not by the upgrade
+        const forRebuild = !!(status.rebuild && status.rebuild.state === "needs-passphrase");
         return box("is-warning", (
             <>
-                <p><b>Your wallet is protected with a password.</b> Enter it once to finish the upgrade to the new Qtum wallet format.
+                <p><b>Your wallet is protected with a password.</b> Enter it once to {forRebuild ? "rebuild your wallet in" : "finish the upgrade to"} the new Qtum wallet format.
                     Your coins are safe. {lockedNote}</p>
                 <div style={{ marginTop: 10 }}>
                     <input type="password" placeholder="Wallet password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
-                    <button className="button is-small" style={{ marginLeft: 10 }} disabled={!passphrase} onClick={() => retryUpgrade(true)}>Finish upgrade</button>
+                    <button className="button is-small" style={{ marginLeft: 10 }} disabled={!passphrase}
+                        onClick={() => (forRebuild ? rebuild(true) : retryUpgrade(true))}>{forRebuild ? "Rebuild wallet" : "Finish upgrade"}</button>
                 </div>
                 {actionMessage && <p style={{ marginTop: 10 }}>{actionMessage}</p>}
             </>
@@ -109,9 +140,14 @@ const Comp = ({ rpcClient, session }) => {
 
     if (status.state === "failed") {
         const upgradeFailed = status.migration && status.migration.state === "failed";
+        const canRebuild = upgradeFailed && status.migration.canRebuild !== false;
+        const rebuildFailed = upgradeFailed && status.rebuild && ["failed", "interrupted"].includes(status.rebuild.state);
         return box("is-danger", (
             <>
-                {upgradeFailed ? (
+                {rebuildFailed ? (
+                    <p><b>Your wallet could not be rebuilt.</b> Your coins are safe: your old wallet was not changed and a copy of it
+                        is kept on your AVADO. Staking is paused until your wallet is in the new Qtum wallet format.</p>
+                ) : upgradeFailed ? (
                     <p><b>Your wallet could not be upgraded to the new Qtum wallet format.</b> Your coins are safe: a copy of your
                         old wallet is kept on your AVADO. Staking is paused until the upgrade works.</p>
                 ) : (
@@ -119,8 +155,23 @@ const Comp = ({ rpcClient, session }) => {
                 )}
                 <div style={{ marginTop: 10 }}>
                     {upgradeFailed && <button className="button is-small" onClick={() => retryUpgrade(false)}>Try again</button>}
+                    {canRebuild && <button className="button is-small" style={{ marginLeft: 10 }} onClick={() => setConfirmRebuild(true)}>Rebuild the wallet from the old copy</button>}
                     <button className="button is-small is-text" style={{ marginLeft: 10 }} onClick={() => setShowDetails(!showDetails)}>{showDetails ? "Hide details" : "Details"}</button>
                 </div>
+                {canRebuild && confirmRebuild && (
+                    <div className="box" style={{ marginTop: 10 }}>
+                        <p>This reads every key from the copy of your old wallet, creates a new wallet in the new format with the same
+                            keys, and checks that nothing is missing before it is used. Your old wallet stays on the AVADO. Scanning
+                            the blockchain can take a few hours.{" "}
+                            {encrypted
+                                ? "Your wallet has a password: you are asked for it before the keys are read, and the new wallet stays locked and does not stake, as after the upgrade."
+                                : "When it is done, staking starts again by itself. If your wallet has a password, you are asked for it first, and the new wallet then stays locked and does not stake, as after the upgrade."}</p>
+                        <div style={{ marginTop: 10 }}>
+                            <button className="button is-small is-danger" onClick={() => rebuild(false)}>Rebuild</button>
+                            <button className="button is-small" style={{ marginLeft: 10 }} onClick={() => setConfirmRebuild(false)}>Cancel</button>
+                        </div>
+                    </div>
+                )}
                 {showDetails && <p className="is-size-7" style={{ marginTop: 10 }}>{status.message}</p>}
                 {actionMessage && <p style={{ marginTop: 10 }}>{actionMessage}</p>}
                 <p className="is-size-7" style={{ marginTop: 10 }}>If this keeps happening, please contact AVADO support.</p>
@@ -129,10 +180,18 @@ const Comp = ({ rpcClient, session }) => {
     }
 
     if (status.state === "ready" && status.newBackupRequired) {
+        const rebuilt = !!(status.migration && status.migration.method === "rebuild");
+        const notCarriedOver = rebuilt && status.rebuild && status.rebuild.notCarriedOver;
         return box("is-warning", (
             <>
-                <p><b>Your wallet was upgraded to the new Qtum wallet format.</b> Please download a fresh backup now and keep it
-                    somewhere safe. Backups made before the upgrade do not include the new wallet format.</p>
+                <p><b>Your wallet was {rebuilt ? "rebuilt in" : "upgraded to"} the new Qtum wallet format.</b> Please download a fresh backup now and keep it
+                    somewhere safe. Backups made before the {rebuilt ? "rebuild" : "upgrade"} do not include the new wallet format.</p>
+                {rebuilt && status.rebuild && status.rebuild.source === "raw-pages" && (
+                    <p style={{ marginTop: 10 }}>{status.rebuild.seedRestored
+                        ? "The old wallet file was damaged; the keys that could be read were carried over and all addresses from its seed were restored."
+                        : "The old wallet file was damaged; the keys that could be read were carried over."}</p>
+                )}
+                {notCarriedOver && <p style={{ marginTop: 10 }}>{notCarriedOver}</p>}
                 {encrypted && <p style={{ marginTop: 10 }}>{lockedNote}</p>}
                 <div style={{ marginTop: 10 }}>
                     <DownloadBackup rpcClient={rpcClient} session={session} onSuccess={refresh} />

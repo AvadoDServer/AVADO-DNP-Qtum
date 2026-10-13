@@ -11,6 +11,7 @@ const ini = require('ini');
 const JsonStore = require("./jsonstore");
 const qtumkeys = require("./qtumkeys");
 const walletfiles = require("./walletfiles");
+const legacywallet = require("./legacywallet");
 
 const log = (...args) => console.log("[monitor]", ...args);
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -34,11 +35,30 @@ const RESTORE_DIR = '/package/data/restore';
 // Qtum v29.1 wallet tool, only used to flush a legacy (Berkeley DB) wallet
 // that was not closed cleanly, so that Qtum v30 can migrate it.
 const LEGACY_WALLET_TOOL = '/usr/local/lib/qtum-legacy/qtum-wallet';
+// Rebuild of a wallet from the copy of the legacy wallet (when the upgrade
+// fails): temporary copies and record dumps (removed after every rebuild,
+// they hold the keys), and rebuilt wallets that did not pass the checks.
+const REBUILD_TMP_DIR = '/package/data/wallet-rebuild-tmp';
+const REBUILD_FAILED_DIR = '/package/data/wallet-rebuild-failed';
+// The legacy wallet that a rebuilt wallet replaced is kept next to it.
+const REPLACED_PREFIX = "legacy-wallet-replaced-";
+const REBUILT_PREFIX = "rebuilt-";
+
+// Test-only switches, honoured on regtest only (test/rebuild-e2e.sh):
+//   fail-migration  migratewallet fails, as it does for the wallets the rebuild is for
+//   drop-one-key    the rebuild leaves one key out, so its checks must fail
+//   slow-rebuild    the rebuild waits 60 s after creating the new wallet (to interrupt it)
+//   unload-fails    closing the new wallet fails, so it must be parked
+//   crash-during-swap  the monitor exits between moving the old wallet aside and
+//                   moving the new one in (as on a power cut); the next start must finish
+//   crash-during-swap-partial  the same, after moving only the old wallet.dat (not its log files)
+const TEST_HOOKS = String(process.env.QTUM_MONITOR_TEST_HOOKS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 // wallet-state.json keys
 const MIGRATION_KEY = "migration";
 const NEW_BACKUP_KEY = "newBackupRequired";
 const RESTORE_KEY = "restore";
+const REBUILD_KEY = "rebuild";
 const WALLET_CREATED_KEY = "walletCreatedAt";
 
 // Settings the wizard may change, and their allowed values. The first two end
@@ -89,11 +109,12 @@ class WalletProblem extends Error {
 // Wallet status shown in the wizard
 // ---------------------------------------------------------------------------
 
-// state: starting | restarting | migrating | restoring | ready | needs-passphrase | failed | stopped
+// state: starting | restarting | migrating | rebuilding | restoring | ready | needs-passphrase | failed | stopped
 // problem: wallet-missing | null
 let walletStatus = { state: "starting", message: "", problem: null };
 let importStatus = null;   // { state: running | done | failed, message }
 let restoreResult = null;  // { state: failed, message, at } of the last restore
+let rebuildProgress = null; // { step, progress } while a rebuild runs
 let busy = null;           // name of the wallet task that is running
 let restartRequested = false;
 
@@ -170,16 +191,19 @@ const rpcCredentials = () => {
 };
 
 // wallet: true -> the default wallet ("") endpoint /wallet/
+// walletName: "name" -> the endpoint of that wallet, /wallet/name
 // timeout: 0 -> wait as long as it takes (upgrade, rescan)
 const rpc = (method, params = [], opts = {}) => {
-    const wallet = !!opts.wallet;
+    const walletPath = typeof opts.walletName === "string"
+        ? `/wallet/${encodeURIComponent(opts.walletName)}`
+        : (opts.wallet ? "/wallet/" : "/");
     const timeout = opts.timeout === undefined ? 60000 : opts.timeout;
     return new Promise((resolve, reject) => {
         const body = JSON.stringify({ jsonrpc: "1.0", id: "monitor", method, params });
         const req = http.request({
             host: "127.0.0.1",
             port: RPC_PORT,
-            path: wallet ? "/wallet/" : "/",
+            path: walletPath,
             method: "POST",
             auth: rpcCredentials(),
             headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
@@ -205,6 +229,19 @@ const rpc = (method, params = [], opts = {}) => {
         req.on("error", reject);
         req.end(body);
     });
+};
+
+// The chain qtumd runs: "main", "test", "regtest", ...
+const chainName = async () => (await rpc("getblockchaininfo", [], { timeout: 15000 })).chain;
+
+// Is a test-only switch on? Only ever on regtest.
+const testHook = async (name) => {
+    if (TEST_HOOKS.indexOf(name) < 0) return false;
+    try {
+        return (await chainName()) === "regtest";
+    } catch (err) {
+        return false;
+    }
 };
 
 // The words shown to the owner for an error from qtumd or the monitor
@@ -291,7 +328,13 @@ const syncQtumConf = () => {
 // legacy Berkeley DB wallets), create, load, restore
 // ---------------------------------------------------------------------------
 
-const walletFile = () => walletfiles.defaultWalletFile(QTUM_DATA_PATH);
+// The data directory of the chain qtumd runs: the data directory itself on
+// mainnet (the package default), its regtest/ sub directory when EXTRA_OPTS
+// has -regtest (the tests).
+const chainDataDir = () => (/(^|\s)-regtest(=1)?(\s|$)/.test(process.env.EXTRA_OPTS || "")
+    ? path.join(QTUM_DATA_PATH, "regtest")
+    : QTUM_DATA_PATH);
+const walletFile = () => walletfiles.defaultWalletFile(chainDataDir());
 const walletSideFiles = (file) => [file, `${file}-journal`, `${file}-wal`, `${file}-shm`];
 // Next to the default wallet: the Berkeley DB log files of the legacy wallet,
 // and the extra wallets an upgrade creates for watch-only and solvable
@@ -381,11 +424,82 @@ const finishInterruptedRestore = () => {
     }
 };
 
+const getRebuild = () => walletState.get(REBUILD_KEY) || null;
+const updateRebuild = (changes) => {
+    const rebuild = Object.assign({}, getRebuild(), changes);
+    walletState.set(REBUILD_KEY, rebuild);
+    return rebuild;
+};
+
+const REBUILD_INTERRUPTED = "The wallet rebuild was interrupted. The old wallet is untouched; press Rebuild again.";
+
+// Wallet directories a rebuild created and did not finish (qtumd stopped)
+const leftoverRebuiltWallets = () => {
+    const dir = path.dirname(walletFile());
+    return walletfiles.listDir(dir).filter((name) => name.indexOf(REBUILT_PREFIX) === 0).map((name) => path.join(dir, name));
+};
+
+// A rebuild was interrupted (container stopped). It is not resumed: the old
+// wallet must be in place and the half-made wallet is kept for support. If it
+// was interrupted after the new wallet was already in place, it is finished.
+// Runs while qtumd is stopped. Returns true when the owner must be told.
+const finishInterruptedRebuild = () => {
+    // temporary copies of the old wallet and record dumps: ours, they hold keys
+    walletfiles.removeTree(REBUILD_TMP_DIR);
+    const rebuild = getRebuild();
+    if (!rebuild || rebuild.state !== "running") return false;
+    const file = walletFile();
+    if (rebuild.step === "replacing" && rebuild.result) {
+        // Interrupted while the checked new wallet was being put in place:
+        // finish the swap when every piece is where it should be.
+        const kind = walletfiles.walletFileKind(file);
+        const rebuiltReady = !!rebuild.walletName
+            && walletfiles.walletFileKind(path.join(path.dirname(file), rebuild.walletName, "wallet.dat")) === "sqlite";
+        const keep = rebuild.keepDir;
+        let finished = false;
+        try {
+            if (kind === "sqlite") {
+                finished = true; // the new wallet was already in place
+            } else if (keep && rebuiltReady && !walletfiles.exists(file)
+                && walletfiles.walletFileKind(path.join(keep, "wallet.dat")) === "bdb") {
+                // the old wallet was moved aside, maybe without its log files:
+                // move whatever is left of it too (moves only what is there)
+                moveLegacyAside(keep);
+                moveRebuiltIn(rebuild.walletName, keep);
+                finished = true;
+            } else if (keep && rebuiltReady && kind === "bdb" && walletfiles.sha256File(file) === rebuild.sourceSha256) {
+                moveLegacyAside(keep); // nothing was moved yet
+                moveRebuiltIn(rebuild.walletName, keep);
+                finished = true;
+            }
+        } catch (err) {
+            log("the interrupted wallet rebuild could not be finished:", err.message);
+        }
+        if (finished) {
+            recordRebuildDone(rebuild.result);
+            leftoverRebuiltWallets().forEach((d) => walletfiles.moveInto(d, path.join(REBUILD_FAILED_DIR, walletfiles.timestamp())));
+            log("the interrupted wallet rebuild was finished: the new wallet is in place");
+            return false;
+        }
+    }
+    const migration = getMigration();
+    if (walletfiles.walletFileKind(file) !== "bdb" && migration && migration.backupDir
+        && walletfiles.walletFileKind(path.join(migration.backupDir, "wallet.dat")) === "bdb") {
+        putLegacyWalletBack(migration.backupDir, "interrupted-rebuild");
+    }
+    leftoverRebuiltWallets().forEach((d) => walletfiles.moveInto(d, path.join(REBUILD_FAILED_DIR, walletfiles.timestamp())));
+    updateRebuild({ state: "interrupted", error: REBUILD_INTERRUPTED, finishedAt: now() });
+    updateMigration({ state: "failed", error: REBUILD_INTERRUPTED, failedAt: now() });
+    log("the previous wallet rebuild was interrupted; the old wallet is in place");
+    return true;
+};
+
 // Runs while qtumd is stopped (before it starts). Never deletes a wallet file.
 const prepareWalletFiles = () => {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     fs.mkdirSync(RESTORE_DIR, { recursive: true });
     finishInterruptedRestore();
+    const rebuildInterrupted = finishInterruptedRebuild();
     const file = walletFile();
     let migration = getMigration();
 
@@ -405,7 +519,8 @@ const prepareWalletFiles = () => {
     const kind = walletfiles.exists(file) ? walletfiles.walletFileKind(file) : null;
     if (kind === "bdb") {
         if (backupMatches(migration, file)) {
-            if (migration.state !== "needs-passphrase") {
+            // after an interrupted rebuild, show that (the upgrade is tried again at the next start)
+            if (migration.state !== "needs-passphrase" && !rebuildInterrupted) {
                 migration = Object.assign({}, migration, { state: "pending" });
             }
         } else {
@@ -500,6 +615,7 @@ const migrateDefaultWallet = async (passphrase) => {
     for (;;) {
         const pidBefore = (await qtumProcessInfo()).pid;
         try {
+            if (await testHook("fail-migration")) throw new RpcError("test hook fail-migration: the upgrade was refused", -4);
             const result = await rpc("migratewallet", passphrase ? ["", passphrase] : [""], { timeout: 0 });
             recordMigrationDone(result);
             return true;
@@ -565,8 +681,10 @@ const notAFreshInstall = () => {
     if (walletState.get(RESTORE_KEY)) return "a wallet backup was restored on this AVADO before";
     if (db.get("BACKUP_REQUIRED") === false) return "a wallet backup was downloaded before";
     if (walletfiles.listDir(BACKUP_DIR).length > 0) return `copies of a wallet are in ${BACKUP_DIR}`;
-    const dir = walletfiles.walletDir(QTUM_DATA_PATH);
+    const dir = walletfiles.walletDir(chainDataDir());
     if (walletfiles.listDir(dir).some((name) => /\.legacy\.bak$/.test(name))) return `a copy of an upgraded wallet is in ${dir}`;
+    if (walletfiles.listDir(dir).some((name) => name.indexOf(REPLACED_PREFIX) === 0)) return `a copy of a rebuilt wallet's old wallet is in ${dir}`;
+    if (walletState.get(REBUILD_KEY)) return "a wallet was rebuilt on this AVADO before";
     return null;
 };
 
@@ -693,6 +811,451 @@ const retryMigrationTask = async (passphrase) => {
 };
 
 // ---------------------------------------------------------------------------
+// Rebuild the wallet from the copy of the legacy wallet, when the upgrade
+// (migratewallet) keeps failing: read every key from the copy with the Qtum
+// v29.1 wallet tool, create a new descriptor wallet with the same keys, check
+// that nothing is missing, and only then put it in place of the legacy wallet
+// (which is kept). Nothing is deleted except our temporary copies.
+// ---------------------------------------------------------------------------
+
+// A rebuild problem, in words for the owner (never with key material)
+class RebuildError extends Error {}
+
+const REBUILD_STATES = ["failed", "needs-passphrase"];
+
+// A rebuild needs a failed upgrade and a legacy wallet in place: it copies
+// that wallet first when the saved copy is missing or is not the same file.
+const rebuildPossible = (migration) => !!migration && REBUILD_STATES.indexOf(migration.state) >= 0
+    && walletfiles.walletFileKind(walletFile()) === "bdb";
+
+// Long base58 or hex strings in an error message could be keys: hide them.
+const scrub = (message) => String(message)
+    .replace(/[1-9A-HJ-NP-Za-km-z]{50,}/g, "[key]")
+    .replace(/[0-9a-fA-F]{64,}/g, "[key]");
+
+const setRebuildStep = (step, progress = null) => {
+    const changed = !rebuildProgress || rebuildProgress.step !== step;
+    rebuildProgress = { step, progress };
+    walletStatus = { state: "rebuilding", message: progress === null ? step : `${step}: ${progress} %`, problem: null };
+    if (changed) {
+        updateRebuild({ step });
+        log(`wallet rebuild: ${step}`);
+    }
+};
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// What the rebuilt wallet does not have, in words for the owner ("" if nothing)
+const notCarriedOver = (unsupported) => {
+    const parts = [];
+    if (unsupported.watchOnly) parts.push(plural(unsupported.watchOnly, "watch-only address", "watch-only addresses"));
+    if (unsupported.scripts) parts.push(plural(unsupported.scripts, "multisig or script address", "multisig or script addresses"));
+    if (unsupported.tokens) parts.push(plural(unsupported.tokens, "token", "tokens"));
+    if (unsupported.delegations) parts.push(plural(unsupported.delegations, "staking delegation entry", "staking delegation entries"));
+    if (unsupported.superStakers) parts.push(plural(unsupported.superStakers, "super staker setting", "super staker settings"));
+    return parts.length ? `Not carried over to the new wallet: ${parts.join(", ")}. The old wallet still has them.` : "";
+};
+
+// Dump every record of the legacy wallet copy with the Qtum v29.1 wallet
+// tool, in a temporary data directory (the tool never sees the real files).
+// Resolves to the dump file (inside tmpDir, which only we can read).
+const dumpLegacyWallet = (backupDir, tmpDir) => new Promise((resolve, reject) => {
+    if (!walletfiles.exists(LEGACY_WALLET_TOOL)) {
+        reject(new RebuildError("The tool that reads the old wallet is missing from this package."));
+        return;
+    }
+    fs.mkdirSync(path.join(tmpDir, "wallets"), { recursive: true, mode: 0o700 });
+    fs.chmodSync(tmpDir, 0o700);
+    walletfiles.copyFileDurable(path.join(backupDir, "wallet.dat"), path.join(tmpDir, "wallets", "wallet.dat"));
+    if (walletfiles.exists(path.join(backupDir, "database"))) {
+        walletfiles.copyDirDurable(path.join(backupDir, "database"), path.join(tmpDir, "wallets", "database"));
+    }
+    if (walletfiles.exists(path.join(backupDir, "db.log"))) {
+        walletfiles.copyFileDurable(path.join(backupDir, "db.log"), path.join(tmpDir, "wallets", "db.log"));
+    }
+    const dumpFile = path.join(tmpDir, "wallet.dump");
+    execFile(LEGACY_WALLET_TOOL, [`-datadir=${tmpDir}`, "-wallet=", `-dumpfile=${dumpFile}`, "dump"],
+        { timeout: 15 * 60 * 1000 }, (err, stdout, stderr) => {
+            if (err) {
+                log("legacy wallet tool (dump) failed:", scrub(err.message), scrub(String(stderr).slice(0, 500)));
+                reject(new RebuildError("The copy of the old wallet could not be read."));
+                return;
+            }
+            try {
+                fs.chmodSync(dumpFile, 0o600);
+                resolve(dumpFile);
+            } catch (readErr) {
+                reject(new RebuildError("The copy of the old wallet could not be read."));
+            }
+        });
+});
+
+// Run importdescriptors on the new wallet and show the rescan progress.
+const importWithProgress = async (walletName, descriptors) => {
+    let finished = false;
+    const importing = rpc("importdescriptors", [descriptors], { walletName, timeout: 0 })
+        .then((result) => { finished = true; return result; }, (err) => { finished = true; throw err; });
+    while (!finished) {
+        await Promise.race([importing.catch(() => null), sleep(5000)]);
+        if (finished) break;
+        try {
+            const scanning = (await rpc("getwalletinfo", [], { walletName, timeout: 15000 })).scanning;
+            if (scanning && typeof scanning.progress === "number") {
+                setRebuildStep("Scanning the blockchain", Math.floor(scanning.progress * 100));
+            }
+        } catch (err) {
+            // busy - try again in 5 seconds
+        }
+    }
+    let result;
+    try {
+        result = await importing;
+    } catch (err) {
+        throw new RebuildError(`The keys could not be added to the new wallet (${scrub(plainMessage(err))}).`);
+    }
+    const failed = (result || []).filter((r) => !r || !r.success);
+    if (failed.length || !result || result.length !== descriptors.length) {
+        const first = failed[0] && failed[0].error ? scrub(failed[0].error.message) : "no answer";
+        throw new RebuildError(`${plural(failed.length || descriptors.length, "key", "keys")} could not be added to the new wallet (${first}).`);
+    }
+};
+
+// Every check must pass before the new wallet may replace the old one.
+const checkRebuiltWallet = async (walletName, wallet, chain, imported, descriptorsBefore, report) => {
+    const expected = legacywallet.expectedAddresses(wallet, chain);
+    let missing = 0;
+    for (const address of expected) {
+        const info = await rpc("getaddressinfo", [address], { walletName, timeout: 15000 });
+        if (!info.ismine) missing++;
+    }
+    if (missing) throw new RebuildError(`${plural(missing, "address", "addresses")} of the old wallet ${missing === 1 ? "is" : "are"} missing in the new wallet.`);
+    // a damaged file: the keys it names without a usable key record must be
+    // there too (HD keys come back from the seed)
+    const named = legacywallet.namedOnlyAddresses(wallet, chain);
+    let unrecovered = 0;
+    for (const address of named) {
+        const info = await rpc("getaddressinfo", [address], { walletName, timeout: 15000 });
+        if (!info.ismine) unrecovered++;
+    }
+    report.unrecoveredKeys = unrecovered;
+    if (unrecovered) {
+        updateRebuild({ result: { report } });
+        log(`wallet rebuild: ${unrecovered} of ${named.length} keys named in the damaged wallet are not in the new wallet`);
+        throw new RebuildError(`${unrecovered} ${unrecovered === 1 ? "key" : "keys"} of the damaged wallet could not be recovered. Contact AVADO support.`);
+    }
+    const listed = (await rpc("listdescriptors", [], { walletName, timeout: 15000 })).descriptors.length;
+    if (listed !== descriptorsBefore + imported) {
+        throw new RebuildError(`The new wallet has ${listed - descriptorsBefore} key sets instead of ${imported}.`);
+    }
+    const first = legacywallet.firstReceiveAddress(wallet, chain);
+    if (wallet.hd) {
+        const info = first ? await rpc("getaddressinfo", [first], { walletName, timeout: 15000 }) : {};
+        if (!/^m\/0['h]\/0['h]\//.test(info.hdkeypath || "")) throw new RebuildError("The new wallet does not derive the old wallet's addresses.");
+    }
+    const info = await rpc("getwalletinfo", [], { walletName, timeout: 15000 });
+    if (info.descriptors !== true || !(info.keypoolsize >= 1)) throw new RebuildError("The new wallet cannot make new addresses.");
+    return expected.length + named.length;
+};
+
+// Copy the old wallet's labels (and payee address book) to the new wallet.
+const copyLabels = async (walletName, wallet) => {
+    let skipped = 0;
+    for (const entry of Array.from(wallet.labels.entries())) {
+        try {
+            await rpc("setlabel", [entry[0], entry[1]], { walletName, timeout: 15000 });
+        } catch (err) {
+            skipped++;
+        }
+    }
+    if (skipped) log(`wallet rebuild: ${skipped} of ${wallet.labels.size} labels could not be copied`);
+    return wallet.labels.size - skipped;
+};
+
+// Close the new wallet in qtumd. Tried twice (a wallet that just finished a
+// long rescan can be slow to close). True when it is closed.
+const unloadRebuiltWallet = async (walletName, simulateFailure) => {
+    if (simulateFailure) return false;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            await rpc("unloadwallet", [walletName], { timeout: 60000 });
+            return true;
+        } catch (err) {
+            // -18: not loaded (any more)
+            if (err instanceof RpcError && err.code === -18) return true;
+            log(`wallet rebuild: closing the new wallet failed (attempt ${attempt}): ${scrub(err.message)}`);
+        }
+    }
+    return false;
+};
+
+// The new wallet is not used: close it and keep it for support, out of the
+// way. If qtumd does not close it, qtumd is stopped before its files move.
+const parkRebuiltWallet = async (walletName, walletDir, simulateUnloadFailure) => {
+    const unloaded = await unloadRebuiltWallet(walletName, simulateUnloadFailure);
+    const dir = path.join(walletDir, walletName);
+    if (!walletfiles.exists(dir)) return;
+    if (!unloaded) await stopQtum();
+    const parked = walletfiles.moveInto(dir, path.join(REBUILD_FAILED_DIR, walletfiles.timestamp()));
+    log(`the rebuilt wallet that was not used is in ${parked}`);
+    if (!unloaded) {
+        await startQtum();
+        await waitForRpc();
+    }
+};
+
+const REPLACED_README =
+    "The Qtum wallet (legacy Berkeley DB format) that was replaced by a wallet rebuilt from the\n" +
+    "same keys, because the automatic upgrade to the Qtum v30 wallet format failed.\n" +
+    "It can be opened with Qtum Core v29 or older.\n";
+
+// Swap, part 1: move the legacy wallet into the kept directory. qtumd must be stopped.
+const moveLegacyAside = (keep) => {
+    const file = walletFile();
+    const dir = path.dirname(file);
+    [file, path.join(dir, "database"), path.join(dir, "db.log"), path.join(dir, ".walletlock")]
+        .forEach((f) => walletfiles.moveInto(f, keep));
+    fs.writeFileSync(path.join(keep, "README.txt"), REPLACED_README);
+    walletfiles.fsyncDir(dir);
+};
+
+// Swap, part 2: move the rebuilt wallet to the default wallet's place. qtumd must be stopped.
+const moveRebuiltIn = (walletName, keep) => {
+    const file = walletFile();
+    const dir = path.dirname(file);
+    const rebuiltDir = path.join(dir, walletName);
+    ["wallet.dat", "wallet.dat-journal"].forEach((name) => {
+        const src = path.join(rebuiltDir, name);
+        if (!walletfiles.exists(src)) return;
+        const dst = path.join(dir, name);
+        try {
+            fs.renameSync(src, dst);
+        } catch (err) {
+            walletfiles.copyFileDurable(src, dst);
+        }
+    });
+    walletfiles.fsyncDir(dir);
+    if (walletfiles.walletFileKind(file) !== "sqlite") throw new Error("the rebuilt wallet could not be put in place");
+    // whatever else is left of the new wallet's directory goes with the old wallet
+    if (walletfiles.listDir(rebuiltDir).length) walletfiles.moveInto(rebuiltDir, keep);
+    else fs.rmdirSync(rebuiltDir);
+    log(`rebuilt wallet put in place; the old wallet is kept in ${keep}`);
+};
+
+const recordRebuildDone = (result) => {
+    updateMigration(Object.assign({ state: "done", method: "rebuild", error: null }, result));
+    updateRebuild({ state: "done", finishedAt: now() });
+    walletState.set(NEW_BACKUP_KEY, true);
+};
+
+const rebuildWalletTask = async (passphrase) => {
+    rebuildProgress = null;
+    walletStatus = { state: "rebuilding", message: "Getting ready", problem: null };
+    const migration = getMigration();
+    if (!rebuildPossible(migration)) {
+        throw new RebuildError("There is no failed wallet upgrade to rebuild from.");
+    }
+    await waitForRpc();
+    if (await descriptorWalletLoaded()) {
+        log("wallet rebuild: the wallet is already upgraded");
+        updateMigration({ state: "done", error: null });
+        await ensureDefaultWalletLoaded();
+        return;
+    }
+    if (walletfiles.walletFileKind(walletFile()) !== "bdb") {
+        throw new RebuildError("The wallet in use is not the old wallet, so there is nothing to rebuild.");
+    }
+    // The rebuilt wallet replaces the wallet in place, so it must be made from
+    // a copy of exactly that file. When the saved copy is not (e.g. Qtum put
+    // the wallet back after a failed upgrade, or another backup was restored),
+    // copy the wallet in place now and rebuild from that copy.
+    let backupDir = migration.backupDir;
+    if (!backupMatches(migration, walletFile())) {
+        let backup;
+        try {
+            backup = backupLegacyWallet(walletFile(), "legacy-wallet-before-rebuild");
+        } catch (err) {
+            log("wallet rebuild: the wallet in place could not be copied:", err.message);
+            throw new RebuildError(err.code === "ENOSPC"
+                ? "There is not enough free disk space on your AVADO to copy the wallet."
+                : "The wallet in use could not be copied.");
+        }
+        updateMigration({ backupDir: backup.dir, sha256: backup.sha256, originalBackupDir: migration.originalBackupDir || migration.backupDir || null });
+        backupDir = backup.dir;
+        log("wallet rebuild: the saved copy is not the wallet in place; the wallet in place was copied and is rebuilt from that copy");
+    }
+    const sourceSha256 = getMigration().sha256;
+
+    const stamp = walletfiles.timestamp();
+    const walletName = `${REBUILT_PREFIX}${stamp}`;
+    const walletDir = path.dirname(walletFile());
+    const tmpDir = path.join(REBUILD_TMP_DIR, stamp);
+    updateRebuild({ state: "running", startedAt: now(), backupDir, walletName, error: null, result: null });
+
+    // 1. read every key of the copy
+    setRebuildStep("Reading the old wallet");
+    let wallet;
+    let parsed;
+    try {
+        try {
+            parsed = await legacywallet.parseDumpFile(await dumpLegacyWallet(backupDir, tmpDir));
+        } catch (err) {
+            // A damaged file (e.g. cut short) that Berkeley DB refuses: read the
+            // pages that are there directly, from the saved copy (read only).
+            const toolFailed = err instanceof RebuildError
+                || (err instanceof legacywallet.LegacyWalletError && err.code === "bad-dump");
+            if (!toolFailed) throw err;
+            log("the wallet tool cannot read the old wallet, reading it directly");
+            parsed = legacywallet.readWalletFile(path.join(backupDir, "wallet.dat"));
+            log(`wallet rebuild: read directly: ${parsed.pages.pagesPresent} pages present, ${parsed.pages.pagesMissing} missing, ${parsed.pages.damagedPages} damaged pages, ${parsed.pages.damagedItems} damaged records`);
+        }
+        wallet = legacywallet.readLegacyWallet(parsed.records, passphrase, parsed.counts, { damaged: parsed.source === "raw-pages" });
+    } catch (err) {
+        if (err instanceof legacywallet.LegacyWalletError && err.code === "needs-passphrase") {
+            updateRebuild({ state: "needs-passphrase", finishedAt: now() });
+            updateMigration({ state: "needs-passphrase", encrypted: true });
+            setStatus("needs-passphrase", "Your wallet is protected with a password. Enter it to rebuild the wallet.");
+            return;
+        }
+        if (err instanceof legacywallet.LegacyWalletError) throw new RebuildError(err.message);
+        throw err;
+    } finally {
+        walletfiles.removeTree(tmpDir);
+    }
+    const chain = await chainName();
+    const descriptors = legacywallet.buildDescriptors(wallet, chain);
+    const report = legacywallet.summary(wallet, descriptors, parsed);
+    log(`wallet rebuild: read from ${report.source}; the old wallet has ${report.keys} keys (${report.hdKeys} from ${report.seeds} HD seeds, ${report.individualKeys} on their own), ${report.labels} labels; record counts ${JSON.stringify(report.counts)}`);
+    if (await testHook("drop-one-key")) {
+        const i = descriptors.map((d) => !d.range && !d.active).lastIndexOf(true);
+        descriptors.splice(i >= 0 ? i : descriptors.length - 1, 1);
+        log("wallet rebuild: test hook drop-one-key left one key out");
+    }
+
+    // 2. a new wallet under its own name, never the default wallet
+    setRebuildStep("Creating the new wallet");
+    const secret = wallet.encrypted ? passphrase : "";
+    try {
+        // blank for an HD wallet (its descriptors come from the old seed); a
+        // non-HD wallet gets descriptors from a new seed, like migratewallet does
+        await rpc("createwallet", [walletName, false, !!wallet.hd, secret, false, true, false], { timeout: 60000 });
+        const descriptorsBefore = (await rpc("listdescriptors", [], { walletName, timeout: 15000 })).descriptors.length;
+        if (await testHook("slow-rebuild")) await sleep(60000);
+        if (wallet.encrypted) await rpc("walletpassphrase", [secret, 600], { walletName, timeout: 15000 });
+        try {
+            setRebuildStep(`Importing ${plural(wallet.keys.length, "key", "keys")}`);
+            await importWithProgress(walletName, descriptors);
+        } finally {
+            if (wallet.encrypted) {
+                try {
+                    await rpc("walletlock", [], { walletName, timeout: 15000 });
+                } catch (err) {
+                    log("wallet rebuild: could not lock the new wallet:", scrub(err.message));
+                }
+            }
+        }
+
+        // 3. the checks
+        setRebuildStep("Checking the result");
+        const addresses = await checkRebuiltWallet(walletName, wallet, chain, descriptors.length, descriptorsBefore, report);
+        report.labelsCopied = await copyLabels(walletName, wallet);
+        report.addressesChecked = addresses;
+        log(`wallet rebuild: all ${addresses} addresses of the old wallet are in the new wallet`);
+    } catch (err) {
+        await parkRebuiltWallet(walletName, walletDir);
+        if (err instanceof RebuildError) throw err;
+        throw new RebuildError(`The new wallet could not be made (${scrub(plainMessage(err))}).`);
+    }
+
+    // 4. put it in place while qtumd is stopped
+    setRebuildStep("Putting the new wallet in place");
+    // test switches are read now: qtumd does not answer while it is stopped
+    const unloadFails = await testHook("unload-fails");
+    const crashInSwap = await testHook("crash-during-swap");
+    const crashInSwapPartial = await testHook("crash-during-swap-partial");
+    if (!(await unloadRebuiltWallet(walletName, unloadFails))) {
+        await parkRebuiltWallet(walletName, walletDir, unloadFails);
+        throw new RebuildError("The new wallet could not be closed, so it was not used.");
+    }
+    if (walletfiles.sha256File(walletFile()) !== sourceSha256) {
+        await parkRebuiltWallet(walletName, walletDir);
+        throw new RebuildError("The wallet in use changed during the rebuild, so the new wallet was not used.");
+    }
+    const missing = notCarriedOver(wallet.unsupported);
+    const result = {
+        rebuiltAt: now(),
+        keys: wallet.keys.length,
+        descriptors: descriptors.length,
+        encrypted: wallet.encrypted || !!migration.encrypted,
+        report,
+        notCarriedOver: missing,
+    };
+    const keep = path.join(walletDir, `${REPLACED_PREFIX}${stamp}`);
+    try {
+        await stopQtum();
+    } catch (err) {
+        await parkRebuiltWallet(walletName, walletDir);
+        throw err;
+    }
+    // from here on a restart finishes the swap (finishInterruptedRebuild)
+    updateRebuild({ step: "replacing", result, keepDir: keep, sourceSha256 });
+    if (crashInSwapPartial) {
+        // only wallet.dat was moved aside, its log files were not
+        walletfiles.moveInto(walletFile(), keep);
+        log("wallet rebuild: test hook crash-during-swap-partial stops the monitor now");
+        process.exit(1);
+    }
+    moveLegacyAside(keep);
+    if (crashInSwap) {
+        log("wallet rebuild: test hook crash-during-swap stops the monitor now");
+        process.exit(1);
+    }
+    moveRebuiltIn(walletName, keep);
+    recordRebuildDone(result);
+    rebuildProgress = null;
+    await startQtum();
+    await waitForRpc();
+    await ensureDefaultWalletLoaded();
+    if (missing) log(`wallet rebuild: ${missing}`);
+    log("wallet rebuilt from the copy of the old wallet");
+};
+
+// A rebuild that failed: the old wallet stays in place; say why.
+const runRebuild = async (passphrase) => {
+    try {
+        await rebuildWalletTask(passphrase);
+    } catch (err) {
+        rebuildProgress = null;
+        const rebuild = getRebuild();
+        if (rebuild && rebuild.state === "done") {
+            // the new wallet is in place already; only starting Qtum with it failed
+            log("Qtum could not be started with the rebuilt wallet:", scrub(err.message));
+            setStatus("failed", `Your wallet was rebuilt, but the Qtum node did not start with it (${scrub(plainMessage(err))}). Please restart the Qtum package.`);
+            return;
+        }
+        const message = err instanceof RebuildError
+            ? `${err.message} Your old wallet was not changed.`
+            : `The wallet could not be rebuilt (${scrub(err.message)}). Your old wallet was not changed.`;
+        log(`wallet rebuild failed: ${message}`);
+        updateRebuild({ state: "failed", error: message, finishedAt: now() });
+        const migration = getMigration();
+        if (migration && REBUILD_STATES.indexOf(migration.state) >= 0) updateMigration({ state: "failed", failedAt: now() });
+        // qtumd may have been stopped in the last step: make sure it runs and the old wallet is in place
+        const info = await qtumProcessInfo();
+        if (info.statename !== "RUNNING") {
+            try {
+                if (walletfiles.walletFileKind(walletFile()) !== "bdb") putLegacyWalletBack(getMigration().backupDir, "failed-rebuild");
+                leftoverRebuiltWallets().forEach((d) => walletfiles.moveInto(d, path.join(REBUILD_FAILED_DIR, walletfiles.timestamp())));
+                await startQtum();
+                await waitForRpc();
+            } catch (startErr) {
+                log("could not start Qtum after the failed rebuild:", startErr.message);
+            }
+        }
+        setStatus("failed", message);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // HTTP API (proxied by nginx at http://qtum.my.ava.do/monitor/)
 // ---------------------------------------------------------------------------
 
@@ -775,6 +1338,7 @@ server.post("/restartQtum", async (req, res) => {
 
 server.get("/walletstatus", async (req, res) => {
     const migration = getMigration();
+    const rebuild = getRebuild();
     let scanning = false;
     if (importRunning()) {
         try {
@@ -790,9 +1354,22 @@ server.get("/walletstatus", async (req, res) => {
         busy,
         migration: migration ? {
             state: migration.state,
-            migratedAt: migration.migratedAt || null,
+            method: migration.method || "upgrade",
+            migratedAt: migration.migratedAt || migration.rebuiltAt || null,
+            failedAt: migration.failedAt || null,
             error: migration.error || null,
             encrypted: !!migration.encrypted,
+            canRebuild: rebuildPossible(migration),
+        } : null,
+        rebuild: rebuild ? {
+            state: rebuild.state,
+            step: rebuildProgress ? rebuildProgress.step : (rebuild.step || null),
+            progress: rebuildProgress ? rebuildProgress.progress : null,
+            error: rebuild.error || null,
+            notCarriedOver: (rebuild.result && rebuild.result.notCarriedOver) || "",
+            // "raw-pages": the old wallet file was damaged and read directly
+            source: (rebuild.result && rebuild.result.report && rebuild.result.report.source) || null,
+            seedRestored: !!(rebuild.result && rebuild.result.report && rebuild.result.report.hd),
         } : null,
         newBackupRequired: walletState.get(NEW_BACKUP_KEY) === true,
         import: importStatus,
@@ -893,6 +1470,25 @@ server.post("/migrate", wizardOnly, async (req, res) => {
         }
         const passphrase = req.body && req.body.passphrase ? String(req.body.passphrase) : null;
         runTask("migrating", () => retryMigrationTask(passphrase));
+        // the banner then speaks about the upgrade again, not about a rebuild
+        const rebuild = getRebuild();
+        if (rebuild && ["needs-passphrase", "failed", "interrupted"].indexOf(rebuild.state) >= 0) updateRebuild({ state: "superseded" });
+        res.send(202, { started: true });
+    } catch (err) {
+        sendError(res, err);
+    }
+});
+
+// Rebuild the wallet from the copy of the old wallet (when the upgrade keeps
+// failing), optionally with the wallet password
+server.post("/rebuild", wizardOnly, async (req, res) => {
+    try {
+        const migration = getMigration();
+        if (!rebuildPossible(migration)) {
+            throw new UserError("There is no failed wallet upgrade to rebuild from.");
+        }
+        const passphrase = req.body && req.body.passphrase ? String(req.body.passphrase) : null;
+        runTask("rebuilding", () => runRebuild(passphrase));
         res.send(202, { started: true });
     } catch (err) {
         sendError(res, err);

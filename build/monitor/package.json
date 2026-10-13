@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "test": "node --test test/legacywallet.test.js test/bdbfile.test.js test/bigdump.test.js"
+  },
   "dependencies": {
     "ini": "^2.0.0",
     "restify": "^8.5.1",

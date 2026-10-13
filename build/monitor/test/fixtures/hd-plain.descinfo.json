@@ -1,0 +1,15 @@
+[
+{"descriptor":"combo(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/0h/0h/*h)#l2mu6j4y","checksum":"9vwyg4ed"}
+,{"descriptor":"combo(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/0h/1h/*h)#0v3d2zqa","checksum":"42y4c9v5"}
+,{"descriptor":"pkh(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/44h/88h/0h/0/*)#ulhwj588","checksum":"4tu2r9e5"}
+,{"descriptor":"sh(wpkh(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/49h/88h/0h/0/*))#086dhu3w","checksum":"z0dtdum4"}
+,{"descriptor":"wpkh(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/84h/88h/0h/0/*)#54kl6a53","checksum":"ed47gqh4"}
+,{"descriptor":"tr(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/86h/88h/0h/0/*)#sl2uerge","checksum":"jkw0gy7y"}
+,{"descriptor":"pk(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/44h/88h/0h/0/*)#mk455efn","checksum":"el3897lw"}
+,{"descriptor":"pkh(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/44h/88h/0h/1/*)#dtj00phl","checksum":"ylet7sfv"}
+,{"descriptor":"sh(wpkh(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/49h/88h/0h/1/*))#6x5m0ry3","checksum":"hwra4rw2"}
+,{"descriptor":"wpkh(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/84h/88h/0h/1/*)#9pn78gyf","checksum":"gesl448d"}
+,{"descriptor":"tr(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/86h/88h/0h/1/*)#pt0aykcp","checksum":"rztw43wu"}
+,{"descriptor":"pk(tpubD6NzVbkrYhZ4XAEqFuHwTXvQsRveN85of5nSEkeZggCWfmZihSyguUUmrj42qKYuFQwjKS915e9dA2iF2BiRpkXqPuA1NUGrXfukHdSpJ4v/44h/88h/0h/1/*)#2zs4fvet","checksum":"gt5xct0k"}
+,{"descriptor":"combo(039f4f558c4fea9f4ae12ec51ea83056c7e65dbb7a21a38a943ddc78f2de3622d7)#ldzltlhg","checksum":"8y4h7zmr"}
+]

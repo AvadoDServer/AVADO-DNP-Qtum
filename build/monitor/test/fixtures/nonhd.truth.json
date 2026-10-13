@@ -1,0 +1,83 @@
+{
+  "note": "Regtest keys made by generate.sh; they hold no real coins.",
+  "passphrase": null,
+  "masterKey": null,
+  "hdseedid": null,
+  "keypoolsize": 0,
+  "balances": {
+    "trusted": 60000,
+    "untrusted_pending": 0,
+    "immature": 0,
+    "stake": 0
+  },
+  "labels": {
+    "qTbqB9PoB1PPnfZRXCRqypityXsP95JUAk": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "meSgBntu7yLBf67kg9ERN9CW9pc5qqShyW": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "qcrt1qdcnu7wa3fku4cjnvfqxyapf2rxvux3u7uc3p5m": {
+      "label": "",
+      "purpose": "receive"
+    },
+    "qHqmG11GKjyvsd5Mm8sRHWk3xu57m4kJvG": {
+      "label": "First",
+      "purpose": "receive"
+    },
+    "mb2QAKozKPqaT728BMyJDrzwJs1BC9z9Rs": {
+      "label": "First",
+      "purpose": "receive"
+    },
+    "qcrt1qqvv3kgv884v5w5d6727uyvsskcyfrx05rgr3gk": {
+      "label": "First",
+      "purpose": "receive"
+    },
+    "qgVZH957B8Yxg3srhCXJb52J9NvTi7srMf": {
+      "label": "Uncompressed",
+      "purpose": "receive"
+    }
+  },
+  "keys": [
+    {
+      "wif": "cRZypdGT9TrwEYpTnug7f2Vyptxuc7ysuSKZpKveo3K7pWSG9NXM",
+      "created": "1970-01-01T00:00:01Z",
+      "flags": {
+        "label": "First"
+      },
+      "addresses": [
+        "qHqmG11GKjyvsd5Mm8sRHWk3xu57m4kJvG",
+        "mb2QAKozKPqaT728BMyJDrzwJs1BC9z9Rs",
+        "qcrt1qqvv3kgv884v5w5d6727uyvsskcyfrx05rgr3gk"
+      ],
+      "hdkeypath": null
+    },
+    {
+      "wif": "cSVeXJshffSKbrRkti7ybs2KU9zB6ZZE7QeC47Lhsp6XqrCsZSfD",
+      "created": "1970-01-01T00:00:01Z",
+      "flags": {
+        "label": ""
+      },
+      "addresses": [
+        "qTbqB9PoB1PPnfZRXCRqypityXsP95JUAk",
+        "meSgBntu7yLBf67kg9ERN9CW9pc5qqShyW",
+        "qcrt1qdcnu7wa3fku4cjnvfqxyapf2rxvux3u7uc3p5m"
+      ],
+      "hdkeypath": null
+    },
+    {
+      "wif": "92az4MiiSF7sWA37wR5G3vkjKW1mk24xtFkocs46xMBwYiC6Qwz",
+      "created": "1970-01-01T00:00:01Z",
+      "flags": {
+        "label": "Uncompressed"
+      },
+      "addresses": [
+        "qgVZH957B8Yxg3srhCXJb52J9NvTi7srMf"
+      ],
+      "hdkeypath": null
+    }
+  ],
+  "scripts": 2
+}

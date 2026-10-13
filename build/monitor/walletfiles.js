@@ -116,6 +116,16 @@ function removeQuietly(file) {
     }
 }
 
+// Remove a directory tree we created ourselves (temporary files only).
+function removeTree(dir) {
+    try {
+        if (fs.rmSync) fs.rmSync(dir, { recursive: true, force: true });
+        else fs.rmdirSync(dir, { recursive: true });
+    } catch (e) {
+        // not there
+    }
+}
+
 function timestamp() {
     return new Date().toISOString().replace(/[:.]/g, "-");
 }
@@ -131,5 +141,7 @@ module.exports = {
     moveInto,
     listDir,
     removeQuietly,
+    removeTree,
+    fsyncDir: fsyncPath,
     timestamp,
 };
