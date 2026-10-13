@@ -5,8 +5,11 @@
 //
 // Keeps the smallest number of pages (at least 60 %) that still holds the HD
 // chain record and the seed key, so that every address of the old wallet can
-// be restored. Prints { cut, pages, recoverable, all }: the addresses the
-// rebuilt wallet must own, and whether that is every address of the old wallet.
+// be restored, and that loses at least one key record. Prints { cut, pages,
+// keysRead, recoverable, all }: the addresses the rebuilt wallet must own, and
+// whether that is every address of the old wallet. Exits 2 when no cut of
+// this wallet qualifies (the records needed sit on its last pages): the test
+// then cuts another wallet.
 const fs = require("fs");
 const lw = require("../../legacywallet");
 const qtumkeys = require("../../qtumkeys");
@@ -21,8 +24,14 @@ const seedWif = truth.keys.find((k) => k.flags.hdseed !== undefined).wif;
 
 for (let cut = Math.ceil(pages * 0.6); cut < pages; cut++) {
     fs.writeFileSync(out, full.slice(0, cut * PAGE));
-    const raw = lw.readWalletFile(out);
-    const wallet = lw.readLegacyWallet(raw.records, truth.passphrase, raw.counts, { damaged: true });
+    let raw;
+    let wallet;
+    try {
+        raw = lw.readWalletFile(out);
+        wallet = lw.readLegacyWallet(raw.records, truth.passphrase, raw.counts, { damaged: true });
+    } catch (err) {
+        continue; // too little left to read
+    }
     const wifs = wallet.keys.map((k) => qtumkeys.encodeWif(k.secret, 0xef, k.compressed));
     if (!raw.records.has("hdchain") || wifs.indexOf(seedWif) < 0) continue;
     // keys read, plus every HD address derived from the seed within the ranges
@@ -42,6 +51,8 @@ for (let cut = Math.ceil(pages * 0.6); cut < pages; cut++) {
         if (address === k.addresses[0]) recoverable.add(address);
     });
     let all = truth.keys.every((k) => recoverable.has(k.addresses[0]));
+    // a plain cut must lose a key record and still restore every address
+    if (option !== "--break-imported-key" && (!all || wallet.keys.length >= truth.keys.length)) continue;
     if (option === "--break-imported-key") {
         // damage the key record of an imported key (not derivable from the
         // seed) on the pages left: the file still names that key, so the
@@ -81,4 +92,4 @@ for (let cut = Math.ceil(pages * 0.6); cut < pages; cut++) {
     process.exit(0);
 }
 console.error("no cut keeps the HD chain and the seed key");
-process.exit(1);
+process.exit(2);

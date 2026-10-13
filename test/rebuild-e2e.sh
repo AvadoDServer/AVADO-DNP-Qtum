@@ -298,18 +298,28 @@ echo "ok   partial swap: only the new wallet in the wallet folder, every old wal
 stop
 
 echo "--- a wallet file cut short: the upgrade fails for real, the rebuild reads the pages directly"
-mkdir -p "$WORK/regtest/wallets/hd-plain-cut"
-node "$HERE/../build/monitor/test/fixtures/truncate.js" "$WORK/regtest/wallets/hd-plain/wallet.dat" "$OUT/hd-plain.truth.json" \
-    "$WORK/regtest/wallets/hd-plain-cut/wallet.dat" > "$OUT/cut.json" || fail "could not cut the wallet"
-echo "     kept $(jq .cut "$OUT/cut.json") of $(jq .pages "$OUT/cut.json") pages, $(jq .keysRead "$OUT/cut.json") of $(jq '.keys | length' "$OUT/hd-plain.truth.json") key records"
+# The wallets are made anew on every run: when the records the cut must keep
+# sit on the last pages of hd-plain, cut hd-imported instead.
+CUT=""
+for w in hd-plain hd-imported; do
+    mkdir -p "$WORK/regtest/wallets/$w-cut"
+    rc=0
+    node "$HERE/../build/monitor/test/fixtures/truncate.js" "$WORK/regtest/wallets/$w/wallet.dat" "$OUT/$w.truth.json" \
+        "$WORK/regtest/wallets/$w-cut/wallet.dat" > "$OUT/cut.json" 2>"$OUT/cut.err" || rc=$?
+    [ $rc = 0 ] && { CUT=$w; break; }
+    [ $rc = 2 ] || fail "could not cut the wallet: $(cat "$OUT/cut.err")"
+    echo "     $w: no cut keeps the records the test needs, trying the next wallet"
+done
+[ -n "$CUT" ] || fail "could not cut the wallet: no wallet qualifies"
+echo "     $CUT: kept $(jq .cut "$OUT/cut.json") of $(jq .pages "$OUT/cut.json") pages, $(jq .keysRead "$OUT/cut.json") of $(jq '.keys | length' "$OUT/$CUT.truth.json") key records"
 # every address is recoverable (surviving keys or derived from the seed), so the whole balance must come back
 [ "$(jq .all "$OUT/cut.json")" = true ] || fail "cut: not every address is recoverable: $(jq -c . "$OUT/cut.json")"
-[ "$(jq .keysRead "$OUT/cut.json")" -lt "$(jq '.keys | length' "$OUT/hd-plain.truth.json")" ] || fail "cut: no key record was lost"
-start hd-plain-cut ""
+[ "$(jq .keysRead "$OUT/cut.json")" -lt "$(jq '.keys | length' "$OUT/$CUT.truth.json")" ] || fail "cut: no key record was lost"
+start $CUT-cut ""
 wait_state failed 300
 LEGACY_SHA=$(legacy_sha)
 log_has 'wallet upgrade failed' || fail "cut: the real upgrade did not fail"
-rebuild_ok hd-plain
+rebuild_ok $CUT
 log_has 'the wallet tool cannot read the old wallet, reading it directly' || fail "cut: the rebuild did not read the pages directly"
 [ "$(status | jq -r .rebuild.source)" = raw-pages ] || fail "cut: walletstatus does not report the direct read"
 [ "$(status | jq -r .rebuild.seedRestored)" = true ] || fail "cut: the seed was not restored"
@@ -319,7 +329,7 @@ in_box 'grep -q "\"unrecoveredKeys\": 0" /package/data/wallet-state.json && grep
     || fail "cut: the keys named without a key record were not checked"
 echo "ok   cut: real upgrade failure, read directly, every address and the whole balance restored"
 echo "ok   cut: the keys the file names without a key record are all in the new wallet (from the seed)"
-no_secrets_in_log hd-plain
+no_secrets_in_log $CUT
 stop
 
 echo "--- a damaged wallet file naming a key that cannot be recovered: the rebuild is refused"
