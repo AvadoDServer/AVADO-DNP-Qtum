@@ -3,9 +3,8 @@
 # at qtum.my.ava.do. Exact Node patch tag so a rebuild of this release uses
 # the same toolchain; the UI source is pinned by its release tag below.
 FROM node:20.20.2-bookworm-slim AS ui
-# TODO(tag): set to the Client UI release tag with the Qtum app at release
-# (the branch name is only for local builds).
-ARG CLIENT_UI_VERSION=qtum-app
+# The AVADO-Client-UI release that carries the Qtum Staking app.
+ARG CLIENT_UI_VERSION=v0.3.0
 ARG CLIENT_UI_REPO=https://github.com/AvadoDServer/AVADO-Client-UI
 RUN apt-get -y update && apt-get -y install --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
