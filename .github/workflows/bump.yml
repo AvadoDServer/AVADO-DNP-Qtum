@@ -1,0 +1,98 @@
+name: Bump Qtum
+# Every 4 hours: if a newer stable Qtum Core release exists (and its Linux
+# tarball is attached), open or update ONE pull request on branch
+# avado-bot/bump that moves the package to it (VERSION + QTUM_SHA256 in
+# docker-compose.yml, and the package version + 1 patch). A release whose PR
+# the owner closed is skipped. A hard-fork release ("Mandatory update before
+# Mainnet block N") opens an issue for the owner at once, with the block and
+# its estimated date. Details: .github/pipeline/bump.mjs.
+# Runs unless the repository variable PIPELINE_MODE is off (it only opens PRs;
+# the gate decides about merging).
+on:
+  schedule:
+    - cron: '23 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'TEST ONLY: pretend this Qtum tag (for example v30.3) is the newest release (leave empty for a normal run)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Only print what would happen'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write # starts pr-checks.yml when there is no PAT_TOKEN, and the gate
+  issues: write # the hard-fork issue, and a failure of this workflow
+
+concurrency:
+  group: bump
+  cancel-in-progress: false
+
+# bash -eo pipefail for every step: a failing command in front of a pipe
+# (for example "check | tee log") fails its step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  bump:
+    if: vars.PIPELINE_MODE != 'off'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Bump
+        run: node .github/pipeline/bump.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Pushes and PRs made with a personal token start the PR checks; see README.
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          PIPELINE_OWNER: ${{ vars.PIPELINE_OWNER }}
+          PIPELINE_MODE: ${{ vars.PIPELINE_MODE }}
+          INPUT_VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+      - name: Tell the owner if this workflow broke
+        if: failure() || cancelled()
+        run: node .github/pipeline/report.mjs failure "Bump Qtum"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PIPELINE_OWNER: ${{ vars.PIPELINE_OWNER }}
+          JOB_STATUS: ${{ job.status }}
+      - if: success()
+        run: node .github/pipeline/report.mjs success "Bump Qtum"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # GitHub switches off the scheduled workflows of a public repo after 60 days
+  # without commits, and Qtum releases come every 4 to 8 months. Enabling them
+  # through the API resets that clock (no commit needed; also while
+  # PIPELINE_MODE is off, so turning the robots on later just works). Not in a
+  # test copy (IPFS_PROVIDER=local): a private repo is never switched off.
+  keepalive:
+    if: github.event_name == 'schedule' && vars.IPFS_PROVIDER != 'local'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Keep the scheduled robots switched on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for wf in bump.yml gate.yml; do
+            if gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/enable" >/dev/null; then
+              echo "$wf: enabled"
+            else
+              echo "::warning::could not re-enable $wf (the release watcher reports a switched-off workflow)"
+            fi
+          done

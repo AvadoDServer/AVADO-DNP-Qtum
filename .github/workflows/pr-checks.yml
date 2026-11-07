@@ -1,0 +1,335 @@
+name: PR checks
+# Our own checks for every pull request, on free GitHub-hosted runners. The
+# result is ONE commit status on the PR head: "avado/checks". The gate
+# (gate.yml) merges the bump bot's PR only when it is green.
+#
+# Plan (no build):
+#   - the pipeline's own rules (unit tests)                            .github/pipeline/test/
+#   - the Qtum tarball docker-compose.yml pins (VERSION, QTUM_SHA256)
+#     is the one the Qtum release publishes                             scripts/ci/check-sha256.sh
+#   - package name, volume, ports and env keys are unchanged against
+#     the base branch and production; versions only go up; the
+#     manifest agrees with docker-compose.yml                          scripts/ci/check-identity.sh
+# Package: AVADOSDK build (the files are added to the IPFS node, like
+# ci-build-action did), then on the image loaded back from the uploaded file:
+#   - the exact Qtum Core version                                       scripts/ci/check-version.sh
+#   - every qtumd option and qtum.conf key we use is accepted           scripts/ci/check-flags.sh
+#   - regtest smoke test: every RPC the wizard uses, every monitor
+#     endpoint, and other web sites cannot use /rpc                     test/smoke-test.sh
+#   - old wallets keep every private key: wallets made by Qtum 0.20.3
+#     and 22.1 (with and without a password) and by the production
+#     image are upgraded by this build and every key is compared       scripts/ci/legacy-wallet-test.sh
+#   - it boots on Qtum mainnet (peers, header sync moving, clean stop)  scripts/ci/boot-test.sh
+# The tested build's record is kept as artifact avado-build-<content id>
+# (scripts/ci/content-id.sh); release.yml publishes exactly that build after
+# the merge, and nothing else. A held package (file "hold") is not built.
+#
+# No secrets are used. Started by hand (workflow_dispatch), input "pr" is a PR
+# number of THIS repo (the bump bot uses this when it has no PAT_TOKEN), or
+# "main" to check the default branch as it is (when Release says there is no
+# tested build). PRs from forks are only checked by their own pull_request run,
+# whose builds go to a throwaway IPFS node and can never be released.
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Pull request number of this repo to check, or "main" to check the default branch as it is'
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read # look up the PR (workflow_dispatch)
+  statuses: write
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+# bash -eo pipefail for every step: a failing check in front of a pipe (the
+# smoke test's "| tee") fails its step.
+defaults:
+  run:
+    shell: bash
+
+env:
+  # IPFS API the AVADOSDK adds the build to. Repository variable IPFS_PROVIDER:
+  # empty = AVADO's node (as ci-build-action), "local" = a throwaway kubo on
+  # the runner (for test copies of this repo; such builds cannot be released).
+  # Pull requests from forks always use the throwaway node: release.yml never
+  # uses their builds, so nothing is added to AVADO's node for them.
+  IPFS_API: ${{ (vars.IPFS_PROVIDER == 'local' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'http://127.0.0.1:5001' || vars.IPFS_PROVIDER || 'http://80.208.229.228:35001' }}
+  KUBO_IMAGE: ipfs/kubo:v0.25.0@sha256:9d917826eb669276040efb39cf6c68ae7463356a8e216eb13b278de00aa126be
+
+jobs:
+  plan:
+    name: Plan (unit tests, identity, tarball)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      sha: ${{ steps.pr.outputs.sha }}
+      held: ${{ steps.hold.outputs.held }}
+    steps:
+      - id: pr
+        name: Pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          INPUT_PR: ${{ inputs.pr }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ -n "$EVENT_SHA" ]; then
+            sha=$EVENT_SHA base=$EVENT_BASE
+          elif [ "$INPUT_PR" = main ] || [ "$INPUT_PR" = "$DEFAULT_BRANCH" ]; then
+            # The default branch as it is: compared with its previous commit.
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)
+            base=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.parents[0].sha')
+          else
+            case "$INPUT_PR" in '' | *[!0-9]*) echo "::error::input pr must be a pull request number or \"main\" (got '$INPUT_PR')"; exit 1 ;; esac
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR")
+            head_repo=$(echo "$pr" | jq -r '.head.repo.full_name // empty')
+            if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+              # A run started here has this repo's permissions; code from a fork
+              # must never run with them (its own pull_request run checks it).
+              echo "::error::PR #$INPUT_PR comes from ${head_repo:-a deleted fork}, not from $GITHUB_REPOSITORY. PRs from forks are checked only by their own pull_request run; push the branch to this repo to check it here."
+              exit 1
+            fi
+            sha=$(echo "$pr" | jq -r .head.sha)
+            base=$(echo "$pr" | jq -r .base.sha)
+          fi
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+          echo "base=$base" >>"$GITHUB_OUTPUT"
+          echo "Checking $sha against base $base"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          fetch-depth: 0 # the identity check reads older commits
+          persist-credentials: false
+      - name: Status avado/checks = pending
+        continue-on-error: true # read-only token on pull requests from forks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.pr.outputs.sha }}" -f state=pending -f context=avado/checks \
+            -f description="Checks running" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Unit tests of the pipeline rules
+        run: node --test ".github/pipeline/test/*.test.mjs"
+      - id: hold
+        name: Held?
+        run: |
+          if [ -f hold ]; then
+            reason=$(sed -n '/^[[:space:]]*#/d; /[^[:space:]]/{p;q;}' hold)
+            echo "held=${reason:-held (no reason given)}" >>"$GITHUB_OUTPUT"
+            echo "::notice::The package is HELD, not built or tested: ${reason:-held (no reason given)}"
+          else
+            echo "Not held."
+          fi
+      - name: Qtum release tarball (sha256 as published)
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # GitHub API rate limit only
+        run: scripts/ci/check-sha256.sh
+      - name: Identity (name, volume, ports, env keys, versions)
+        if: ${{ !cancelled() }}
+        run: scripts/ci/check-identity.sh "${{ steps.pr.outputs.base }}" "$RUNNER_TEMP/identity"
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: checks-plan
+          path: ${{ runner.temp }}/identity/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  package:
+    name: package
+    needs: plan
+    if: needs.plan.outputs.held == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    # This job runs the pull request's own scripts: it gets no write access.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h / | tail -1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Throwaway IPFS node (test copies and pull requests from forks)
+        if: env.IPFS_API == 'http://127.0.0.1:5001'
+        run: |
+          docker run -d --name ipfs -p 127.0.0.1:5001:5001 "$KUBO_IMAGE" >/dev/null
+          for _ in $(seq 1 60); do curl -fsS -X POST http://127.0.0.1:5001/api/v0/version >/dev/null 2>&1 && exit 0; sleep 1; done
+          docker logs ipfs; exit 1
+      - id: build
+        name: AVADOSDK build (build, add to IPFS)
+        run: |
+          record=$(scripts/ci/sdk-build.sh "$RUNNER_TEMP/checks/build" "$IPFS_API")
+          cat "$record"
+          {
+            echo "image=$(jq -r '.name + ":" + .version' "$record")"
+            echo "name=$(jq -r .name "$record")"
+            echo "qtum=$(jq -r .qtum "$record")"
+            echo "content=$(jq -r .contentId "$record")"
+          } >>"$GITHUB_OUTPUT"
+          # Pinned by id: loading the production image later re-tags <name>:<its version>.
+          docker tag "$(jq -r .imageId "$record")" avado-ci/candidate:latest
+      - name: Exact Qtum version
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }} # every check runs, so one run shows every problem
+        run: scripts/ci/check-version.sh avado-ci/candidate:latest "${{ steps.build.outputs.qtum }}"
+      - name: Every qtumd option and qtum.conf key is accepted
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: scripts/ci/check-flags.sh avado-ci/candidate:latest "$RUNNER_TEMP/checks/flags"
+      - name: Regtest smoke test (every RPC the wizard uses)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/checks/smoke"
+          test/smoke-test.sh avado-ci/candidate:latest 2>&1 | tee "$RUNNER_TEMP/checks/smoke/smoke.log"
+      # The production image (about 360 MB from AVADO's IPFS gateway) is kept in
+      # GitHub's cache between runs, named by its IPFS hash; production-image.sh
+      # checks every cached file against that hash, so a cache can never
+      # change what is tested.
+      - id: prodcache
+        name: Production image cache (restore)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/production-cache
+          key: qtum-production-image-latest
+          restore-keys: qtum-production-image-
+      - id: production
+        name: Production image (from the store)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          PRODUCTION_CACHE: ${{ runner.temp }}/production-cache
+        run: |
+          record=$(scripts/ci/production-image.sh "${{ steps.build.outputs.name }}" avado-ci/production:latest "$RUNNER_TEMP/checks/production")
+          cat "$record"
+          cid=$(jq -r '.imageHash | sub("^/ipfs/"; "")' "$record")
+          # only today's production image goes back into the cache
+          find "$PRODUCTION_CACHE" -type f ! -name "$cid.tar.xz" -delete
+          echo "cid=$cid" >>"$GITHUB_OUTPUT"
+      - name: Production image cache (save)
+        if: ${{ !cancelled() && steps.production.outcome == 'success' && steps.prodcache.outputs.cache-matched-key != format('qtum-production-image-{0}', steps.production.outputs.cid) }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/production-cache
+          key: qtum-production-image-${{ steps.production.outputs.cid }}
+      - id: oldqtum
+        name: Old Qtum builds (download for the wallet test)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LEGACY_BIN_CACHE: ${{ runner.temp }}/legacy-bins
+          LEGACY_FETCH_ONLY: '1'
+        run: scripts/ci/legacy-wallet-test.sh avado-ci/candidate:latest avado-ci/candidate:latest "$RUNNER_TEMP/checks/wallets"
+      - name: Legacy wallets keep every key (production image, then this build)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.production.outcome == 'success' && steps.oldqtum.outcome == 'success' }}
+        env:
+          LEGACY_BIN_CACHE: ${{ runner.temp }}/legacy-bins # old Qtum builds, not uploaded
+        run: scripts/ci/legacy-wallet-test.sh avado-ci/candidate:latest avado-ci/production:latest "$RUNNER_TEMP/checks/wallets"
+      - name: Boots on Qtum mainnet
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          # Exit code 2: only peers or the header sync failed (public network,
+          # not our package): one more try on a fresh volume.
+          rc=0
+          scripts/ci/boot-test.sh avado-ci/candidate:latest "$RUNNER_TEMP/checks/boot" || rc=$?
+          if [ "$rc" = 2 ]; then
+            echo "::warning::only network-dependent boot checks failed; trying once more on a fresh volume"
+            mv "$RUNNER_TEMP/checks/boot" "$RUNNER_TEMP/checks/boot-try1"
+            rc=0
+            scripts/ci/boot-test.sh avado-ci/candidate:latest "$RUNNER_TEMP/checks/boot" || rc=$?
+          fi
+          exit "$rc"
+      - name: Keep the tested build's record (release.yml publishes exactly this build)
+        if: success() # only when every check above passed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: avado-build-${{ steps.build.outputs.content }}
+          path: |
+            ${{ runner.temp }}/checks/build/record.json
+            ${{ runner.temp }}/checks/build/releases.json
+            ${{ runner.temp }}/checks/build/manifest.json
+          retention-days: 90
+          if-no-files-found: error
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: checks-package
+          # never the wallets' keys (checks/wallets/keys)
+          path: |
+            ${{ runner.temp }}/checks/build/record.json
+            ${{ runner.temp }}/checks/build/sdk-build.log
+            ${{ runner.temp }}/checks/flags/
+            ${{ runner.temp }}/checks/smoke/
+            ${{ runner.temp }}/checks/production/production.json
+            ${{ runner.temp }}/checks/wallets/*.log
+            ${{ runner.temp }}/checks/wallets/result.tsv
+            ${{ runner.temp }}/checks/boot/
+            ${{ runner.temp }}/checks/boot-try1/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  result:
+    name: avado/checks
+    needs: [plan, package]
+    # not on a cancelled run (a newer push replaced it): its "failure" would
+    # overwrite the newer run's "pending" on the same commit
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+      actions: write # starts the gate after a run the bump bot started
+    steps:
+      - id: status
+        name: Status avado/checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.plan.outputs.sha || github.event.pull_request.head.sha }}
+          INPUT_PR: ${{ inputs.pr }}
+          PLAN: ${{ needs.plan.result }}
+          PACKAGE: ${{ needs.package.result }}
+          HELD: ${{ needs.plan.outputs.held }}
+        run: |
+          # Even when the plan job failed before it knew the commit, the PR gets a status.
+          case "$INPUT_PR" in '' | *[!0-9]*) ;; *) [ -n "$SHA" ] || SHA=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR" --jq .head.sha || true) ;; esac
+          # A held package is not built: the package job is skipped.
+          [ -n "$HELD" ] && [ "$PACKAGE" = skipped ] && PACKAGE=success
+          if [ "$PLAN" = success ] && [ "$PACKAGE" = success ]; then
+            state=success desc="All checks passed${HELD:+ (held, not built: $HELD)}"
+          else
+            state=failure desc="Failed: plan $PLAN, package $PACKAGE (open the run for details)"
+          fi
+          echo "$state: $desc"
+          echo "state=$state" >>"$GITHUB_OUTPUT"
+          if [ -n "$SHA" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=avado/checks \
+              -f description="${desc:0:139}" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null ||
+              echo "::warning::could not set the avado/checks status (read-only token on a pull request from a fork)"
+          fi
+      - name: Start the gate
+        # A run started with the built-in token (the bump bot without PAT_TOKEN
+        # uses workflow_dispatch) does not trigger gate.yml's workflow_run.
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run gate.yml -R "$GITHUB_REPOSITORY" --ref "${{ github.event.repository.default_branch }}" || echo "::warning::could not start the gate; it runs within 4 hours anyway"
+      - name: Result
+        run: '[ "${{ steps.status.outputs.state }}" = success ]'
